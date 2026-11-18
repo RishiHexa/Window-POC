@@ -132,6 +132,25 @@ export class WindowAssembly {
     return { x: p.x, y: p.y, w: inToM(u.w), h: inToM(u.h) };
   }
 
+  /**
+   * Depth range of all windows at rest, in metres: { min, max } along z (+z is the exterior). Read from the parts'
+   * deformed geometry, which explode and sash animation never change (they move nodes, not vertices). For the bundled
+   * GLBs, max is the frame's exterior face and min is the extension's interior edge. Presentation only.
+   */
+  restDepth_m() {
+    let min = Infinity, max = -Infinity;
+    for (const u of this.units) {
+      for (const p of u.model.parts) {
+        for (const { mesh } of p.meshes) {
+          if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+          min = Math.min(min, mesh.geometry.boundingBox.min.z);
+          max = Math.max(max, mesh.geometry.boundingBox.max.z);
+        }
+      }
+    }
+    return { min, max };
+  }
+
   isAnimating() { return this.units.some((u) => u.model.isAnimating()); }
   update(dt) { for (const u of this.units) if (u.model.isAnimating()) u.model.update(dt); }
   stop() { for (const u of this.units) u.model.stop(); }

@@ -24,8 +24,13 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { SectionCaps, LAYER_HELPERS } from '../configurator/SectionCaps.js';
 import { FrameGovernor, QUALITY_LEVELS } from '../configurator/FrameGovernor.js';
+import { Scenery } from '../configurator/Scenery.js';
+import { inToM } from '../configurator/deform.js';
 
 const LAYER_GLASS = 3; // rendered, but kept out of the AO normal pass
+// Wall, room and ground: rendered and shadowed, but kept out of the AO pass. GTAO over the deep room seen through the
+// glass and the large wall planes around the frames gave full (black) occlusion; AO is only needed on the product.
+const LAYER_SCENERY = 4;
 
 const props = defineProps({
   assembly: { type: Object, default: null },       // WindowAssembly (markRaw'd by the parent)
@@ -38,6 +43,7 @@ const props = defineProps({
   explode: { type: Number, default: 0 },            // target 0..1 (eased here)
   ao: { type: Boolean, default: true },
   sectionCoreColor: { type: String, default: null }, // PVC core colour for cut faces
+  scenery: { type: Boolean, default: true },         // wall, room, sky and ground (hidden in section / exploded views)
   showStats: { type: Boolean, default: true },
 });
 const emit = defineEmits(['select', 'add']);
@@ -45,7 +51,8 @@ const emit = defineEmits(['select', 'add']);
 const host = ref(null);
 const stats = ref({ fps: 0, quality: QUALITY_LEVELS[0].name, idle: true });
 let renderer, labelRenderer, scene, camera, aoCamera, controls, clock, resizeObs, frame = 0;
-let composer, gtaoPass, keyLight, fillLight, ground, outline;
+let composer, gtaoPass, keyLight, fillLight, ground, outline, scenery;
+const STUDIO_BACKGROUND = new THREE.Color(0xe9ecf0);
 let current = null, caps = null;
 const prepared = new WeakSet(); // WindowModels whose meshes/materials were already set up for this renderer
 let chips = []; // { id, label: CSS2DObject, adds: { side: CSS2DObject } }
@@ -98,7 +105,7 @@ function init() {
   host.value.appendChild(renderer.domElement);
 
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xe9ecf0);
+  scene.background = STUDIO_BACKGROUND;
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
   pmrem.dispose();
@@ -120,9 +127,15 @@ function init() {
   ground.receiveShadow = true;
   scene.add(ground);
 
+  scenery = new Scenery();
+  scenery.group.visible = false;
+  scenery.group.traverse((o) => o.layers.set(LAYER_SCENERY));
+  scene.add(scenery.group);
+
   camera = new THREE.PerspectiveCamera(35, 1, 0.02, 30);
   camera.layers.enable(LAYER_HELPERS);
   camera.layers.enable(LAYER_GLASS);
+  camera.layers.enable(LAYER_SCENERY);
   aoCamera = camera.clone();
 
   controls = new OrbitControls(camera, renderer.domElement);
@@ -237,14 +250,33 @@ function loop(now = performance.now()) {
   renderedLastFrame = true;
 }
 
+/**
+ * Wall, room, sky and ground. Shown only in the assembled, uncut view: an exploded or sectioned window would
+ * intersect the wall. Rebuilt only when the window layout or depth changes. Presentation only.
+ */
+function updateScenery() {
+  if (!scenery) return false;
+  const show = Boolean(current?.units.length) && props.scenery && props.section.mode === 'off' && props.explode === 0 && explodeNow === 0;
+  if (show) {
+    const rects = [...current.rects().values()].map((r) => ({ x: inToM(r.x), y: inToM(r.y), w: inToM(r.w), h: inToM(r.h) }));
+    scenery.update(rects, current.restDepth_m());
+  }
+  scenery.group.visible = show;
+  ground.visible = !show;
+  scene.background = show ? scenery.horizon : STUDIO_BACKGROUND; // a Color: a texture background breaks GTAO
+  return show;
+}
+
 /** Ground and shadow camera follow the model's current bounds (size and explode change them). */
 function fitStage() {
   if (!current) return;
+  const withScenery = updateScenery();
   const b = current.getBounds();
   const s = b.getSize(new THREE.Vector3());
   const c = b.getCenter(new THREE.Vector3());
   ground.position.y = b.min.y - 0.0005;
-  const r = Math.max(s.x, s.y, s.z) * 0.9 + 0.2;
+  // With the wall shown, the shadow camera also reaches the reveals and the sunlit patch on the room floor.
+  const r = Math.max(s.x, s.y, s.z) * 0.9 + (withScenery ? 1.2 : 0.2);
   const [kx, ky, kz] = LIGHTING.key.dir, [fx, fy, fz] = LIGHTING.fill.dir;
   keyLight.position.set(c.x + r * kx, c.y + r * ky, c.z + r * kz);
   keyLight.target.position.copy(c);
@@ -488,6 +520,7 @@ watch(() => props.version, () => { rebuild(); buildChips(); });
 watch(() => props.controls, buildChips);
 watch(() => [props.selected, props.showControls], () => { placeOverlays(); invalidate(false); });
 watch(() => props.section, applySection, { deep: true });
+watch(() => [props.scenery, props.section.mode], fitStage); // shows / hides the wall and refits the shadow camera
 watch(() => props.sectionCoreColor, (c) => { caps?.setColor('pvc', capTint(c)); invalidate(false); });
 watch(() => [props.ao, props.explode], () => invalidate(false));
 onMounted(() => { init(); attach(props.assembly); });
@@ -498,6 +531,7 @@ onBeforeUnmount(() => {
   renderer?.domElement.removeEventListener('pointerup', onPointerUp);
   clearChips();
   caps?.dispose();
+  scenery?.dispose();
   controls?.dispose();
   composer?.dispose();
   renderer?.dispose();

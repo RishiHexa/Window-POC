@@ -130,6 +130,16 @@ function boundsMatchLayout(label) {
 boundsMatchLayout('initial');
 check(a.units.length === 4 && new Set(a.models).size === 4, 'four independent models');
 
+// Rest depth (scenery wall placement): frame front at z = 0, deepest extension edge of the double-hung (-8.229 in).
+{
+  const d = a.restDepth_m();
+  check(near(d.max, 0, 1e-6), `rest depth max (frame exterior face) ${d.max}`);
+  check(near(d.min / 0.0254, -8.229, 1e-3), `rest depth min (extension edge) ${(d.min / 0.0254).toFixed(4)} in`);
+  m1.setExplode(1);
+  check(near(a.restDepth_m().min, d.min, 0), 'rest depth ignores explode');
+  m1.setExplode(0);
+}
+
 // Nothing shared between windows of the same type.
 const geoms = (m) => new Set(m.parts.flatMap((p) => p.meshes.map((x) => x.mesh.geometry)));
 const g1 = geoms(m1), g3 = geoms(m3);

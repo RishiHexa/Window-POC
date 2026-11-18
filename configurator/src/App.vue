@@ -44,6 +44,7 @@ const typeError = ref(null);   // { message, errors[] } for a failed add / type 
 const loading = ref(false);
 const busy = ref(false);
 const showControls = ref(true);
+const showScenery = ref(true); // wall, room, sky and ground (presentation only)
 
 // Window types: key -> { label, source }. Buffers are fetched once; every window parses its own copy.
 const types = ref(BUNDLED_MODELS.map((m) => ({ key: m.file, label: m.label, source: `./${m.file}` })));
@@ -339,6 +340,7 @@ onMounted(async () => {
     if (v && HEX.test(v)) setColor(zone, v);
   }
   if (QS.get('ao') === '0') ao.value = false;
+  if (QS.get('wall') === '0') showScenery.value = false;
   if (QS.has('explode')) explode.value = Math.min(1, Math.max(0, parseFloat(QS.get('explode')) || 0));
   const sec = QS.get('section');
   if (SECTION_MODES.some((m) => m.id === sec) && sec !== 'off') {
@@ -357,7 +359,7 @@ onMounted(async () => {
     <main class="stage">
       <WindowViewer ref="viewer" :assembly="assembly" :version="version" :selected="selectedId"
                     :controls="gridControls" :show-controls="showControls && !busy"
-                    :section="sectionProp" :explode="explode" :ao="ao" :section-core-color="coreColor"
+                    :section="sectionProp" :explode="explode" :ao="ao" :section-core-color="coreColor" :scenery="showScenery"
                     @select="select" @add="addWindow" />
       <div class="stage-tools" v-if="assembly">
         <button @click="viewer.view('exterior')">Exterior</button>
@@ -365,6 +367,7 @@ onMounted(async () => {
         <button v-if="sectionMode !== 'off'" @click="viewer.view('section')">Section</button>
         <button :class="{ on: explode > 0 }" @click="explode = explode > 0 ? 0 : 1">{{ explode > 0 ? 'Assemble' : 'Explode' }}</button>
         <button :class="{ on: showControls }" @click="showControls = !showControls" title="Show the + buttons and window labels">Grid controls</button>
+        <button :class="{ on: showScenery }" @click="showScenery = !showScenery" title="Show the windows in a wall, with a room inside and sky outside">Wall</button>
       </div>
       <div class="badge">Visual preview. Not a source of manufacturing dimensions. Joints between windows are not modelled.</div>
       <div v-if="loading" class="overlay">Loading…</div>
@@ -514,6 +517,11 @@ onMounted(async () => {
           <label for="cy">Cut from bottom: {{ cutYIn.toFixed(2) }} in</label>
           <input id="cy" type="range" min="0.25" :max="ext.h - 0.25" step="0.125" v-model.number="cutYIn" />
         </div>
+        <label class="inline"><input type="checkbox" v-model="showScenery" /> Wall, room and sky</label>
+        <p v-if="showScenery" class="muted small">
+          Scenery only, not an installation detail: the wall's faces line up with the frame front and the extension's
+          interior edge. Sill height, room size and finishes are POC placeholders. Hidden in exploded and section views.
+        </p>
         <label class="inline"><input type="checkbox" v-model="ao" /> Ambient occlusion</label>
         <p v-if="ao && sectionMode !== 'off'" class="muted small">Ambient occlusion is paused while a section is shown.</p>
       </fieldset>

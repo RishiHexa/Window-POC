@@ -12,13 +12,14 @@ npm run test:deform    # headless WindowModel checks (joints, mitre rigidity, re
 npm run validate:casement   # validate public/Casement_V4_cfg.glb (additive-only vs ../glb/Casement_V4.glb)
 npm run test:casement  # headless casement checks (hinge pivots, 90° swing, shoe slide, linkage closure, resize while open)
 npm run test:assembly  # multi-window layout + WindowAssembly with Window_V3 and Casement_V4 side by side
+npm run test:wall      # scenery wall geometry (areas, reveals, winding, closed solid)
 node tools/test-governor.mjs   # adaptive-quality (60 fps) logic
 ```
 
 - Each window's type is one of the bundled GLBs (`BUNDLED_MODELS` in `src/App.vue`), picked in the **type** box.
 - Other files: `?model=Casement_V4_cfg.glb` (first window), or **Load GLB…** (applies to the selected window).
 - Share a state of the first window: `?w=48&h=60&ext=%234e3c2c&int=%23f2f2ee&view=interior`
-  - also `&explode=1`, `&section=corner|vertical|horizontal&cx=4.5&cy=4.5&view=section`, and `&ao=0`
+  - also `&explode=1`, `&section=corner|vertical|horizontal&cx=4.5&cy=4.5&view=section`, `&ao=0` and `&wall=0`
 - Serve GLBs from another folder: `GLB_DIR=<folder> npm run dev`
 
 ## Multiple windows
@@ -60,6 +61,14 @@ The casement GLB adds `davinci.window.hinge/1` pivot/offset node pairs and a roo
 
 ## View features
 
+- **Wall, room and sky** (the **Wall** button or `&wall=0`; `src/configurator/Scenery.js`, `wall.js`). This is scenery only, not an installation detail:
+  - **Wall.** Brick outside and painted plaster inside, with an opening at exactly each window's frame outside rectangle.
+  - **Wall faces.** The exterior face is flush with the frame front. The interior face is at the deepest extension edge, where an extension jamb meets the interior finish. Both are read from the GLBs (`WindowAssembly.restDepth_m()`).
+  - **Inside and outside.** Inside is a room with a wood floor and a ceiling light. Outside are a lawn and a gradient sky dome. Looking from outside, you see the room through the glass, and from inside you see the sky.
+  - **Placeholders.** Sill height (30 in), wall and room size, finishes and the room light are POC placeholders in `SCENERY`.
+  - **Hidden** in exploded and section views.
+  - **Kept out of the AO pass** (own layer). GTAO over the room seen through the glass, or over a texture background, turned the AO clip box black. The wall still casts shadows into the reveals.
+
 - **Exploded view:** the slider or the Explode button eases parts apart along their stack-up (`src/configurator/explode.js`). It moves transforms only. Geometry is untouched, and 0 % restores the exact identity transforms.
 - **Cross-section:** Corner (an L cut like a profile sample), Vertical (head, meeting rail and sill), or Horizontal (jambs). The cut is made with clipping planes and filled with stencil caps (`SectionCaps.js`), so chambers show as solid PVC.
   - Cut faces use the PVC core colour, so a coloured exterior reads like a laminate over a white core.
@@ -82,6 +91,8 @@ The casement GLB adds `davinci.window.hinge/1` pivot/offset node pairs and a roo
 | `src/configurator/WindowModel.js` | loads the GLB, validates it, applies size, colours and animation |
 | `src/configurator/assembly.js` | multi-window layout: placement, overlap, add / resize / remove rules (pure, inches) |
 | `src/configurator/WindowAssembly.js` | one `WindowModel` per window, positioned from the layout (presentation only) |
+| `src/configurator/wall.js` | scenery wall geometry with window openings (pure) |
+| `src/configurator/Scenery.js` | wall, room, ground, sky dome and room light (presentation only) |
 | `src/configurator/explode.js` | exploded-view layout (presentation only) |
 | `src/configurator/SectionCaps.js` | section clipping and stencil caps |
 | `src/configurator/FrameGovernor.js` | adaptive quality for 60 fps |
@@ -92,3 +103,4 @@ The casement GLB adds `davinci.window.hinge/1` pivot/offset node pairs and a roo
 | `tools/test-casement.mjs` | headless model tests (casement: hinge, linkage, resize while open) |
 | `tools/test-governor.mjs` | governor unit tests |
 | `tools/test-assembly.mjs` | multi-window layout and assembly tests (mixed double-hung and casement) |
+| `tools/test-wall.mjs` | scenery wall geometry tests |
