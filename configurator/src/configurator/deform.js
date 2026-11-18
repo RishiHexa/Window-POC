@@ -43,6 +43,18 @@ export function collapseDelta(ref, axis, component) {
   return -gap / k;
 }
 
+/**
+ * Smallest delta for which a rigid part (moves by delta * factor, never stretches) still lies inside the
+ * window's outside edges [0, size + delta] on one axis. -Infinity when it fits at any size.
+ * A constraint already violated at the reference size cannot be fixed by resizing and is not reported.
+ */
+export function rigidFitDelta(lo, hi, factor, size) {
+  let d = -Infinity;
+  if (factor > 0) d = Math.max(d, -lo / factor);              // lo + factor * delta >= 0
+  if (factor < 1) d = Math.max(d, (hi - size) / (1 - factor)); // hi + factor * delta <= size + delta
+  return d;
+}
+
 /** Scale factor for a sash travel animation after a height change. */
 export function travelFactor(anim, dH) {
   return (anim.referenceTravel_m + anim.travelPerDeltaHeight * dH) / anim.referenceTravel_m;

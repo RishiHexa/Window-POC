@@ -27,6 +27,14 @@ const LAYOUT = {
   UpperSash_gasket: [0.2, 0.6],
   UpperSash_glass: [0.0, 0.7],
   UpperBead: [0.1, 0.85],
+  // Casement (one sash). Stack-up in Casement_V*_cfg.glb: the extension is interior, and the bead is
+  // interior of its glass. Glass and both tapes carry cfg.assembly "Sash". The hinge hardware sits in
+  // the pocket between the frame and the sash, so it explodes between them.
+  Sash: [0.2, 0.5],
+  Sash_gasket: [0.2, 0.6],
+  Sash_glass: [0.0, 0.35],
+  Bead: [0.1, 0.2],
+  Hinge: [0.25, 0.25],
 };
 
 /** Unit-free offset direction for a part (multiply by D and t). */

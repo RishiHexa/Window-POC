@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "validate": "node tools/validate-glb.mjs public/Window_V3_cfg.glb",
-    "test:deform": "node tools/test-deform.mjs"
+    "validate:casement": "node tools/validate-glb.mjs public/Casement_V4_cfg.glb --original ../glb/Casement_V4.glb",
+    "test:deform": "node tools/test-deform.mjs",
+    "test:casement": "node tools/test-casement.mjs"
   },
   "dependencies": {
     "three": "0.171.0",

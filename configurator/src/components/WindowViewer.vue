@@ -232,6 +232,8 @@ function prepareModel(model) {
     { key: 'pvc', color: capTint(props.sectionCoreColor), roughness: 0.7, meshes: g.pvc },
     { key: 'glass', color: '#b7cdc8', roughness: 0.2, meshes: g.glass },
     { key: 'gasket', color: '#1c1c1e', roughness: 0.8, meshes: g.gasket },
+    // Hinge hardware (Casement_V3+) is closed prisms too. Only added when present, so other GLBs keep the same passes.
+    ...(g.hardware.length ? [{ key: 'hardware', color: '#8d9096', roughness: 0.45, meshes: g.hardware }] : []),
   ]);
 }
 

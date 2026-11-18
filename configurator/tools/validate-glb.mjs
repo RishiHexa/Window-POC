@@ -9,7 +9,10 @@
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT_SCHEMA, PART_SCHEMA, GROUP_SCHEMA, validateNodeCfg } from '../src/configurator/schema.js';
+import {
+  ROOT_SCHEMA, PART_SCHEMA, GROUP_SCHEMA, HINGE_SCHEMA, HINGE_PIVOT_ROLES, HINGE_OFFSET_ROLES,
+  validateNodeCfg, animationMotion, animationDirection,
+} from '../src/configurator/schema.js';
 import { collapseDelta } from '../src/configurator/deform.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -63,11 +66,42 @@ for (const n of nodes) {
   if (cfg.schema === ROOT_SCHEMA) { if (root) errors.push(`multiple root cfg nodes`); root = n; }
   if (n.mesh !== undefined && cfg.schema !== PART_SCHEMA) errors.push(`${n.name}: mesh node must use ${PART_SCHEMA}`);
   if (n.mesh === undefined && cfg.schema === PART_SCHEMA) errors.push(`${n.name}: ${PART_SCHEMA} on a node without a mesh`);
+  if (cfg.schema === HINGE_SCHEMA) {
+    if (n.mesh !== undefined) errors.push(`${n.name}: ${HINGE_SCHEMA} on a mesh node`);
+    for (const key of ['rotation', 'scale', 'matrix']) if (n[key] !== undefined) errors.push(`${n.name}: hinge node must not have ${key} at rest`);
+    continue; // translation is checked per pivot/offset pair below
+  }
   for (const key of ['translation', 'rotation', 'scale', 'matrix']) {
     if (n[key] !== undefined && cfg.schema !== GROUP_SCHEMA) warnings.push(`${n.name}: has explicit ${key}; configurator requires identity`);
   }
 }
 if (!root) errors.push(`no node with extras.cfg.schema = ${ROOT_SCHEMA}`);
+
+// ---- 1b. hinge pivot/offset pairs (davinci.window.hinge/1): offset is the pivot's child and cancels it exactly
+const nodeByName = new Map(nodes.map((n, i) => [n.name, i]));
+const hingePivots = [];
+const pairedOffsets = new Set();
+nodes.forEach((n, i) => {
+  const cfg = n.extras?.cfg;
+  if (cfg?.schema !== HINGE_SCHEMA || !HINGE_PIVOT_ROLES.includes(cfg.role)) return;
+  const oi = nodeByName.get(cfg.offsetNode);
+  const o = nodes[oi];
+  if (!o) { errors.push(`${n.name}: offsetNode "${cfg.offsetNode}" not found`); return; }
+  pairedOffsets.add(oi);
+  if (!(n.children || []).includes(oi)) errors.push(`${n.name}: offset ${o.name} must be its direct child`);
+  if (o.extras?.cfg?.schema !== HINGE_SCHEMA || !HINGE_OFFSET_ROLES.includes(o.extras.cfg.role) || o.extras.cfg.pivotNode !== n.name) {
+    errors.push(`${o.name}: must be a hinge offset whose pivotNode is ${n.name}`);
+  }
+  const t = n.translation || [0, 0, 0], ot = o.translation || [0, 0, 0];
+  if (Array.isArray(cfg.pivot_m) && t.some((v, k) => Math.abs(v - cfg.pivot_m[k]) > 1e-9)) errors.push(`${n.name}: translation does not match cfg.pivot_m`);
+  if (t.some((v, k) => v + ot[k] !== 0)) errors.push(`${n.name}: pivot + offset translation must be exactly [0, 0, 0]`);
+  hingePivots.push({ index: i, node: n, cfg });
+});
+nodes.forEach((n, i) => {
+  const cfg = n.extras?.cfg;
+  if (cfg?.schema === HINGE_SCHEMA && HINGE_OFFSET_ROLES.includes(cfg.role) && !pairedOffsets.has(i)) errors.push(`${n.name}: hinge offset has no pivot that names it`);
+});
+if (hingePivots.length) info.push(`hinge pivots: ${hingePivots.map((h) => `${h.node.name} (${h.cfg.role}, pivotFactor ${h.cfg.pivotFactor?.x}/${h.cfg.pivotFactor?.y})`).join(', ')}`);
 
 // ---- 2. split planes vs real vertices, geometric limits
 const meshNodes = nodes.filter((n) => n.mesh !== undefined && n.extras?.cfg?.schema === PART_SCHEMA);
@@ -102,9 +136,36 @@ if (root) {
   info.push(`geometric min height ${((r.height_m + minDH) / 0.0254).toFixed(2)} in (${((r.height_m + minDH) * 1000).toFixed(1)} mm)`);
   for (const a of root.extras.cfg.animations || []) {
     const anim = (json.animations || []).find((x) => x.name === a.clip);
-    if (!anim) errors.push(`root animations: clip "${a.clip}" not found`);
-    else if (!anim.channels.some((c) => nodes[c.target.node]?.name === a.node && c.target.path === 'translation')) {
-      errors.push(`root animations: clip "${a.clip}" does not translate node "${a.node}"`);
+    const has = (path) => anim.channels.some((c) => nodes[c.target.node]?.name === a.node && c.target.path === path);
+    const motion = animationMotion(a);
+    if (!anim) { errors.push(`root animations: clip "${a.clip}" not found`); continue; }
+    if (motion === 'translate' && !has('translation')) errors.push(`root animations: clip "${a.clip}" does not translate node "${a.node}"`);
+    if (motion !== 'translate') {
+      if (!has('rotation')) errors.push(`root animations: clip "${a.clip}" does not rotate node "${a.node}"`);
+      if (motion === 'rotate+slide' && !has('translation')) errors.push(`root animations: clip "${a.clip}" does not translate node "${a.node}"`);
+      // Every channel must drive a hinge pivot of this clip (the configurator binds nothing else).
+      // A close clip (direction "close") is named by a hinge pivot's closeClip and may drive every pivot
+      // that its open counterpart drives. Its rest pose is the last key instead of the first.
+      const close = animationDirection(a) === 'close';
+      const owner = close ? hingePivots.find((p) => p.cfg.closeClip === a.clip && p.node.name === a.node) : null;
+      if (close && !owner) errors.push(`clip "${a.clip}" (direction close): no hinge pivot "${a.node}" names it as closeClip`);
+      const drives = (p) => p.cfg.clip === a.clip || p.cfg.closeClip === a.clip || (owner && p.cfg.clip === owner.cfg.clip);
+      for (const c of anim.channels) {
+        const h = hingePivots.find((p) => p.index === c.target.node);
+        if (!h || !drives(h)) errors.push(`clip "${a.clip}": channel on ${nodes[c.target.node]?.name}.${c.target.path} does not drive a hinge pivot of this clip`);
+        else if (!['rotation', 'translation'].includes(c.target.path)) errors.push(`clip "${a.clip}": ${c.target.path} channels are not supported on hinges`);
+        else if (c.target.path === 'translation') {
+          const out = readAccessor(glb, anim.samplers[c.sampler].output);
+          const key = close ? out.slice(out.length - 3) : out.slice(0, 3);
+          const P = h.node.translation || [0, 0, 0];
+          if (key.some((v, k) => Math.abs(v - P[k]) > 1e-6)) errors.push(`clip "${a.clip}": ${close ? 'last' : 'first'} ${h.node.name} translation key must equal its rest pivot`);
+        }
+      }
+    }
+  }
+  for (const h of hingePivots) {
+    for (const name of [h.cfg.clip, h.cfg.closeClip].filter((n) => n !== undefined)) {
+      if (!(root.extras.cfg.animations || []).some((a) => a.clip === name)) errors.push(`${h.node.name}: clip "${name}" not listed in root animations`);
     }
   }
 }

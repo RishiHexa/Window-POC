@@ -17,6 +17,11 @@ const PREVIEW_SWATCHES = [
   { name: 'Black', hex: '#202020' },
 ];
 const IN_STEP = 0.125;
+// GLBs shipped in ./public for the model picker (any other GLB: ?model= or "Load GLB…").
+const BUNDLED_MODELS = [
+  { file: 'Window_V3_cfg.glb', label: 'Double-hung (Window_V3)' },
+  { file: 'Casement_V4_cfg.glb', label: 'Casement (Casement_V4)' },
+];
 // --------------------------------------------------------------------------------
 
 // Optional URL params for sharing a preview: ?model=&w=&h=&ext=&int=&view=interior
@@ -80,6 +85,23 @@ const limits = computed(() => {
     maxH: VISUAL_MAX_IN.height,
   };
 });
+// Fixed-size hinge hardware (Casement_V3+) extends past the frame below this size. Warning only: the
+// hinge maker's real size range is not in the GLB data, so nothing is blocked on it.
+const hardwareWarning = computed(() => {
+  const L = model.value?.limits;
+  if (!L) return '';
+  const over = [];
+  if (L.hardwareFitWidth_m != null && inToM(widthIn.value) < L.hardwareFitWidth_m) over.push(`width < ${mToIn(L.hardwareFitWidth_m).toFixed(2)} in`);
+  if (L.hardwareFitHeight_m != null && inToM(heightIn.value) < L.hardwareFitHeight_m) over.push(`height < ${mToIn(L.hardwareFitHeight_m).toFixed(2)} in`);
+  return over.length ? `At ${over.join(' and ')}, the preview's fixed-size hinge hardware extends past the frame. The hinge's real size range is not in the GLB data.` : '';
+});
+const windowType = computed(() => model.value?.rootCfg.windowType ?? null);
+const selectedBundled = computed(() => (BUNDLED_MODELS.some((m) => m.file === sourceName.value) ? sourceName.value : ''));
+function pickBundled(file) {
+  if (!file || file === sourceName.value) return;
+  closeSashes();
+  open(`./${file}`, file);
+}
 const refSizeIn = computed(() => model.value
   ? { w: model.value.rootCfg.reference.width_in ?? mToIn(model.value.ref.width_m), h: model.value.rootCfg.reference.height_in ?? mToIn(model.value.ref.height_m) }
   : { w: 24, h: 36 });
@@ -211,8 +233,14 @@ onMounted(async () => {
     <aside class="panel">
       <header>
         <h1>Window configurator</h1>
-        <p class="muted">{{ sourceName || 'No model' }}</p>
-        <label class="file-btn">Load GLB…<input type="file" accept=".glb" @change="onFile" /></label>
+        <p class="muted">{{ sourceName || 'No model' }}<span v-if="windowType"> · {{ windowType }}</span></p>
+        <div class="row wrap">
+          <select :value="selectedBundled" :disabled="loading" @change="pickBundled($event.target.value)" title="GLBs in ./public">
+            <option value="" disabled>Bundled model…</option>
+            <option v-for="b in BUNDLED_MODELS" :key="b.file" :value="b.file">{{ b.label }}</option>
+          </select>
+          <label class="file-btn">Load GLB…<input type="file" accept=".glb" @change="onFile" /></label>
+        </div>
       </header>
 
       <fieldset :disabled="!model">
@@ -236,6 +264,7 @@ onMounted(async () => {
                  @input="setSize(widthIn, +$event.target.value)" />
         </div>
         <p v-if="sizeError" class="err">{{ sizeError }}</p>
+        <p v-if="hardwareWarning" class="muted small">⚠ {{ hardwareWarning }}</p>
         <button class="link" @click="resetSize">Reset to {{ refSizeIn.w }} × {{ refSizeIn.h }} in</button>
       </fieldset>
 
@@ -259,8 +288,11 @@ onMounted(async () => {
         <legend>Animation</legend>
         <div class="row wrap">
           <button v-for="c in model?.clips || []" :key="c.clip.name" @click="play(c.clip.name)">{{ c.label }}</button>
-          <button @click="play(null)">Both</button>
+          <button v-if="(model?.clips.filter((c) => c.direction !== 'close').length ?? 0) > 1" @click="play(null)">Both</button>
         </div>
+        <p v-if="model?.clips.some((c) => c.motion !== 'translate')" class="muted small">
+          Opening angle {{ model.clips.find((c) => c.motion !== 'translate').cfg.openAngle_deg }}° is a preview value, not product data.
+        </p>
         <div class="row wrap">
           <button :disabled="!playing" @click="togglePause">{{ paused ? 'Resume' : 'Pause' }}</button>
           <button @click="closeSashes">Close</button>
