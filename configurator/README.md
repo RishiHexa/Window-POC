@@ -11,14 +11,28 @@ npm run validate       # validate public/Window_V3_cfg.glb (schema, split planes
 npm run test:deform    # headless WindowModel checks (joints, mitre rigidity, reset, animation travel, colours)
 npm run validate:casement   # validate public/Casement_V4_cfg.glb (additive-only vs ../glb/Casement_V4.glb)
 npm run test:casement  # headless casement checks (hinge pivots, 90° swing, shoe slide, linkage closure, resize while open)
+npm run test:assembly  # multi-window layout + WindowAssembly with Window_V3 and Casement_V4 side by side
 node tools/test-governor.mjs   # adaptive-quality (60 fps) logic
 ```
 
-- Switch between the bundled GLBs with the **Bundled model…** picker (`BUNDLED_MODELS` in `src/App.vue`).
-- Other files: `?model=Casement_V4_cfg.glb`, or the **Load GLB…** button.
-- Share a state: `?w=48&h=60&ext=%234e3c2c&int=%23f2f2ee&view=interior`
+- Each window's type is one of the bundled GLBs (`BUNDLED_MODELS` in `src/App.vue`), picked in the **type** box.
+- Other files: `?model=Casement_V4_cfg.glb` (first window), or **Load GLB…** (applies to the selected window).
+- Share a state of the first window: `?w=48&h=60&ext=%234e3c2c&int=%23f2f2ee&view=interior`
   - also `&explode=1`, `&section=corner|vertical|horizontal&cx=4.5&cy=4.5&view=section`, and `&ao=0`
 - Serve GLBs from another folder: `GLB_DIR=<folder> npm run dev`
+
+## Multiple windows
+
+Each window has a **+** on every free side, in the view and in the **Windows** panel. A + adds a window on that side, copying the clicked window's type, size and colours. Select a window (click it, its label, or its tab) to change its own type, size, colours and animation.
+
+- **Independent windows.** Each window is its own `WindowModel`, parsed separately from its GLB, so geometry, materials and animation clips are never shared.
+- **Placement** (`src/configurator/assembly.js`, inches). A window is attached to the side of the window it was added from. Its position is derived from that window every time:
+  - On the right or left, the bottoms are aligned. Above or below, the left edges are aligned.
+  - Resizing a window moves the windows attached to its right or top.
+- **Blocked, never clamped.** An add or a resize that would make windows overlap is refused, and the reason is shown. A + that would overlap is not offered.
+- **Removing.** A window can be removed if nothing is attached to it. The first window can also be removed when exactly one window is attached to it, and that one becomes the first window. Any other removal would leave windows without a position, so it is blocked.
+- **Not modelled:** the joint between windows (mullion, coupler, mull cover). There is no documented data for it, so windows are butted frame to frame. The "overall" size is only the extent of the frame outside sizes. It is not a mulled-unit or order dimension.
+- **View features with several windows.** Explode spreads the windows apart (`EXPLODE_SPREAD`, presentation only). Section cuts go through every window. **Open all** and **Close all** drive every window's sash.
 
 ## How resizing works
 
@@ -66,6 +80,8 @@ The casement GLB adds `davinci.window.hinge/1` pivot/offset node pairs and a roo
 | `src/configurator/schema.js` | cfg contract and validation (shared with the Node tools) |
 | `src/configurator/deform.js` | split-plane maths (pure, no three.js) |
 | `src/configurator/WindowModel.js` | loads the GLB, validates it, applies size, colours and animation |
+| `src/configurator/assembly.js` | multi-window layout: placement, overlap, add / resize / remove rules (pure, inches) |
+| `src/configurator/WindowAssembly.js` | one `WindowModel` per window, positioned from the layout (presentation only) |
 | `src/configurator/explode.js` | exploded-view layout (presentation only) |
 | `src/configurator/SectionCaps.js` | section clipping and stencil caps |
 | `src/configurator/FrameGovernor.js` | adaptive quality for 60 fps |
@@ -75,3 +91,4 @@ The casement GLB adds `davinci.window.hinge/1` pivot/offset node pairs and a roo
 | `tools/test-deform.mjs` | headless model tests (double-hung) |
 | `tools/test-casement.mjs` | headless model tests (casement: hinge, linkage, resize while open) |
 | `tools/test-governor.mjs` | governor unit tests |
+| `tools/test-assembly.mjs` | multi-window layout and assembly tests (mixed double-hung and casement) |

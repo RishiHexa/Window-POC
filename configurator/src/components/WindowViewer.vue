@@ -1,7 +1,11 @@
 <script setup>
 // Pure renderer. It owns the three.js scene, camera, post-processing, section planes and the explode
-// easing, and draws whatever WindowModel it is given. It never feeds anything back into the model's
+// easing, and draws whatever WindowAssembly it is given. It never feeds anything back into the model's
 // dimensions. Everything here is presentation.
+//
+// Grid controls (multi-window): a + chip on each free side of each window asks the parent to add a window
+// there, a label chip in each window selects it, and an outline marks the selected window. The chips are DOM
+// elements anchored to the windows (CSS2DRenderer). They only emit events; the parent owns the layout.
 //
 // Performance (target 60 fps):
 //  - Render on demand: frames are drawn only while something changes (orbit/damping, sash animation,
@@ -17,25 +21,36 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { SectionCaps, LAYER_HELPERS } from '../configurator/SectionCaps.js';
 import { FrameGovernor, QUALITY_LEVELS } from '../configurator/FrameGovernor.js';
 
 const LAYER_GLASS = 3; // rendered, but kept out of the AO normal pass
 
 const props = defineProps({
-  model: { type: Object, default: null },          // WindowModel (markRaw'd by the parent)
+  assembly: { type: Object, default: null },       // WindowAssembly (markRaw'd by the parent)
+  version: { type: Number, default: 0 },            // bumped by the parent when windows are added, removed or replaced
+  selected: { type: Number, default: null },        // selected window id
+  // One entry per window: { id, label, sides: { left|right|top|bottom: { ok, reason } } }
+  controls: { type: Array, default: () => [] },
+  showControls: { type: Boolean, default: true },
   section: { type: Object, default: () => ({ mode: 'off', x_m: 0, y_m: 0 }) }, // mode: off|corner|vertical|horizontal
   explode: { type: Number, default: 0 },            // target 0..1 (eased here)
   ao: { type: Boolean, default: true },
   sectionCoreColor: { type: String, default: null }, // PVC core colour for cut faces
   showStats: { type: Boolean, default: true },
 });
+const emit = defineEmits(['select', 'add']);
 
 const host = ref(null);
 const stats = ref({ fps: 0, quality: QUALITY_LEVELS[0].name, idle: true });
-let renderer, scene, camera, aoCamera, controls, clock, resizeObs, frame = 0;
-let composer, gtaoPass, keyLight, ground;
+let renderer, labelRenderer, scene, camera, aoCamera, controls, clock, resizeObs, frame = 0;
+let composer, gtaoPass, keyLight, fillLight, ground, outline;
 let current = null, caps = null;
+const prepared = new WeakSet(); // WindowModels whose meshes/materials were already set up for this renderer
+let chips = []; // { id, label: CSS2DObject, adds: { side: CSS2DObject } }
+let downAt = null;
+let overlayZ = { front: 0, mid: 0 }; // chip / outline depth, from the bounds at the last fitStage
 let explodeNow = 0;
 let needsRender = true, needsShadow = true, lastRenderAt = 0, renderedLastFrame = false;
 let fpsFrames = 0, fpsSince = 0;
@@ -55,10 +70,27 @@ function invalidate(sceneChanged = true) {
   if (sceneChanged) needsShadow = true;
 }
 
+// Lighting (presentation only). The profile detail on white PVC only reads if light is directional and rakes across
+// the profile steps. Ambient (environment + hemisphere) is kept low, so faces turned away from the key are darker.
+// The key comes from the upper left, the opposite side from the default camera (front right), so the shadows that
+// the frame and sash steps cast into the reveals face the viewer. A weak fill from the right keeps those faces from
+// going dead. Colours are unchanged: only the light on them is.
+const LIGHTING = {
+  exposure: 1.0,
+  // Front faces get about the same light as before this tuning (key·n + ambient ≈ 1.8 vs 1.67), so a colour still
+  // reads as itself; faces turned right or down drop to roughly a third of that.
+  environment: 0.38,
+  hemisphere: 0.18,
+  key: { intensity: 2.0, dir: [-0.75, 1.05, 1.0] },  // × stage radius, from the model centre
+  fill: { intensity: 0.32, dir: [1, 0.25, 0.55] },
+  groundShadow: 0.2,
+  ao: { radius: 0.05, scale: 1.5, blend: 1.0 },
+};
+
 function init() {
   renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
   renderer.toneMapping = THREE.NeutralToneMapping; // keeps product colours close to their sRGB values
-  renderer.toneMappingExposure = 0.92;
+  renderer.toneMappingExposure = LIGHTING.exposure;
   renderer.localClippingEnabled = true;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -70,18 +102,20 @@ function init() {
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
   pmrem.dispose();
-  scene.environmentIntensity = 0.6;
+  scene.environmentIntensity = LIGHTING.environment;
 
-  keyLight = new THREE.DirectionalLight(0xffffff, 1.15);
+  keyLight = new THREE.DirectionalLight(0xffffff, LIGHTING.key.intensity);
   keyLight.castShadow = true;
   keyLight.shadow.mapSize.set(2048, 2048);
   keyLight.shadow.bias = -0.0003;
   keyLight.shadow.normalBias = 0.0015;
   keyLight.shadow.radius = 3;
   scene.add(keyLight, keyLight.target);
-  scene.add(new THREE.HemisphereLight(0xffffff, 0xb8bcc4, 0.35));
+  fillLight = new THREE.DirectionalLight(0xf3f6ff, LIGHTING.fill.intensity); // no shadows
+  scene.add(fillLight, fillLight.target);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xb8bcc4, LIGHTING.hemisphere));
 
-  ground = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), new THREE.ShadowMaterial({ opacity: 0.12 }));
+  ground = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), new THREE.ShadowMaterial({ opacity: LIGHTING.groundShadow }));
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
   scene.add(ground);
@@ -100,12 +134,28 @@ function init() {
   const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4, stencilBuffer: true });
   composer = new EffectComposer(renderer, rt);
   gtaoPass = new GTAOPass(scene, aoCamera, 1, 1);
-  gtaoPass.updateGtaoMaterial({ radius: 0.035, distanceExponent: 1.5, thickness: 0.6, scale: 1.1, samples: 8 });
+  gtaoPass.updateGtaoMaterial({ radius: LIGHTING.ao.radius, distanceExponent: 1.5, thickness: 0.6, scale: LIGHTING.ao.scale, samples: 8 });
   gtaoPass.updatePdMaterial({ radius: 6, samples: 8 });
-  gtaoPass.blendIntensity = 0.9;
+  gtaoPass.blendIntensity = LIGHTING.ao.blend;
   composer.addPass(new RenderPass(scene, camera));
   composer.addPass(gtaoPass);
   composer.addPass(new OutputPass());
+
+  // DOM chips over the canvas. The layer ignores the pointer; only the chips themselves take clicks.
+  labelRenderer = new CSS2DRenderer();
+  labelRenderer.domElement.className = 'grid-chips';
+  host.value.appendChild(labelRenderer.domElement);
+
+  // Selected-window outline: a unit square scaled to the window, drawn over everything (presentation only).
+  const sq = new THREE.BufferGeometry().setFromPoints([[0, 0], [1, 0], [1, 0], [1, 1], [1, 1], [0, 1], [0, 1], [0, 0]].map(([x, y]) => new THREE.Vector3(x, y, 0)));
+  outline = new THREE.LineSegments(sq, new THREE.LineBasicMaterial({ color: 0x2563eb, depthTest: false, transparent: true }));
+  outline.renderOrder = 5000;
+  outline.layers.set(LAYER_HELPERS);
+  outline.visible = false;
+  scene.add(outline);
+
+  renderer.domElement.addEventListener('pointerdown', onPointerDown);
+  renderer.domElement.addEventListener('pointerup', onPointerUp);
 
   applyQuality(governor.level);
   clock = new THREE.Clock();
@@ -133,6 +183,7 @@ function resize() {
   if (!w || !h) return;
   renderer.setSize(w, h, false);
   composer.setSize(w, h);
+  labelRenderer.setSize(w, h);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   invalidate(false);
@@ -179,7 +230,9 @@ function loop(now = performance.now()) {
   aoCamera.layers.set(0); // AO sees opaque model + ground only (no glass, no section helpers)
   gtaoPass.enabled = props.ao && QUALITY_LEVELS[governor.level].ao && props.section.mode === 'off';
   needsRender = false;
+  placeOverlays();
   composer.render(dt);
+  labelRenderer.render(scene, camera);
   lastRenderAt = now;
   renderedLastFrame = true;
 }
@@ -192,16 +245,22 @@ function fitStage() {
   const c = b.getCenter(new THREE.Vector3());
   ground.position.y = b.min.y - 0.0005;
   const r = Math.max(s.x, s.y, s.z) * 0.9 + 0.2;
-  keyLight.position.set(c.x + r * 0.8, c.y + r * 1.4, c.z + r * 1.3);
+  const [kx, ky, kz] = LIGHTING.key.dir, [fx, fy, fz] = LIGHTING.fill.dir;
+  keyLight.position.set(c.x + r * kx, c.y + r * ky, c.z + r * kz);
   keyLight.target.position.copy(c);
+  fillLight.position.set(c.x + r * fx, c.y + r * fy, c.z + r * fz);
+  fillLight.target.position.copy(c);
   const sc = keyLight.shadow.camera;
   sc.left = -r; sc.right = r; sc.top = r; sc.bottom = -r; sc.near = 0.01; sc.far = r * 6;
   sc.updateProjectionMatrix();
   gtaoPass.setSceneClipBox(b.clone().expandByScalar(0.3));
+  overlayZ = { front: b.max.z + 0.002, mid: (b.min.z + b.max.z) / 2 };
   invalidate(true);
 }
 
 function prepareModel(model) {
+  if (prepared.has(model)) return;
+  prepared.add(model);
   for (const p of model.parts) {
     for (const { mesh } of p.meshes) {
       mesh.renderOrder = 1000; // after all section stencil/cap draws
@@ -227,7 +286,14 @@ function prepareModel(model) {
       m.needsUpdate = true;
     }
   }
-  const g = model.capGroups();
+}
+
+/** Section caps over every window's meshes. Rebuilt whenever windows are added, removed or replaced. */
+function buildCaps() {
+  caps?.dispose();
+  caps = null;
+  if (!current) return;
+  const g = current.capGroups();
   caps = new SectionCaps(scene, planes, [
     { key: 'pvc', color: capTint(props.sectionCoreColor), roughness: 0.7, meshes: g.pvc },
     { key: 'glass', color: '#b7cdc8', roughness: 0.2, meshes: g.glass },
@@ -237,19 +303,118 @@ function prepareModel(model) {
   ]);
 }
 
-function attach(model) {
+function attach(assembly) {
   caps?.dispose();
   caps = null;
   if (current) scene.remove(current.scene);
-  current = model;
+  current = assembly;
   explodeNow = 0;
-  if (!model) { invalidate(); return; }
-  prepareModel(model);
-  explodeNow = model.explode;
-  scene.add(model.scene);
+  buildChips();
+  if (!assembly) { invalidate(); return; }
+  explodeNow = assembly.explode;
+  scene.add(assembly.scene);
+  rebuild();
+  view('exterior');
+}
+
+/** Windows were added, removed or replaced: set up new models, rebuild the caps, re-apply the section. */
+function rebuild() {
+  if (!current) return;
+  current.models.forEach(prepareModel);
+  buildCaps();
   applySection();
   fitStage();
-  view('exterior');
+}
+
+// ---------- grid chips, selection ----------
+
+const ICON_PLUS = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+const SIDE_WORD = { left: 'left of', right: 'right of', top: 'above', bottom: 'below' };
+
+function chip(className, html, title, onClick) {
+  const el = document.createElement('button');
+  el.type = 'button';
+  el.className = className;
+  el.innerHTML = html;
+  el.title = title;
+  el.setAttribute('aria-label', title);
+  el.addEventListener('pointerdown', (e) => e.stopPropagation());
+  el.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+  const obj = new CSS2DObject(el);
+  scene.add(obj);
+  return obj;
+}
+
+function clearChips() {
+  for (const c of chips) {
+    for (const o of [c.label, ...Object.values(c.adds)]) { scene.remove(o); o.element.remove(); }
+  }
+  chips = [];
+}
+
+/** (Re)create the chips from the controls prop. Only blocked sides get no + (their reason is in the panel). */
+function buildChips() {
+  if (!scene) return;
+  clearChips();
+  if (!current) return;
+  for (const c of props.controls) {
+    const label = chip('gz-label', c.label, `Select ${c.label}`, () => emit('select', c.id));
+    const adds = {};
+    for (const [side, s] of Object.entries(c.sides)) {
+      if (!s.ok) continue;
+      adds[side] = chip(`gz-add gz-${side}`, ICON_PLUS, `Add a window ${SIDE_WORD[side]} ${c.label}`, () => emit('add', { id: c.id, side }));
+    }
+    chips.push({ id: c.id, label, adds });
+  }
+  placeOverlays();
+  invalidate(false);
+}
+
+/** Anchor the chips and the outline to the current (possibly exploded) window rectangles. */
+function placeOverlays() {
+  if (!current || !current.units.length) { outline.visible = false; return; }
+  const { front: zFront, mid: zMid } = overlayZ;
+  for (const c of chips) {
+    if (!current.get(c.id)) continue;
+    const r = current.worldRect(c.id);
+    const show = props.showControls;
+    c.label.visible = show;
+    c.label.element.classList.toggle('on', c.id === props.selected);
+    c.label.position.set(r.x + r.w / 2, r.y + r.h / 2, zMid);
+    const at = { left: [r.x, r.y + r.h / 2], right: [r.x + r.w, r.y + r.h / 2], top: [r.x + r.w / 2, r.y + r.h], bottom: [r.x + r.w / 2, r.y] };
+    for (const [side, o] of Object.entries(c.adds)) {
+      o.visible = show;
+      o.position.set(at[side][0], at[side][1], zMid);
+    }
+  }
+  const sel = props.selected != null && current.get(props.selected) ? current.worldRect(props.selected) : null;
+  outline.visible = Boolean(sel) && props.showControls;
+  if (sel) {
+    outline.position.set(sel.x, sel.y, zFront);
+    outline.scale.set(sel.w, sel.h, 1);
+  }
+}
+
+function onPointerDown(e) { downAt = { x: e.clientX, y: e.clientY }; }
+
+/** A click (not an orbit drag) on a window selects it. */
+function onPointerUp(e) {
+  if (!downAt || !current) return;
+  const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
+  downAt = null;
+  if (moved > 4) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+  const ray = new THREE.Raycaster();
+  ray.layers.set(0);
+  ray.layers.enable(LAYER_GLASS);
+  ray.setFromCamera(ndc, camera);
+  for (const hit of ray.intersectObject(current.scene, true)) {
+    if (hit.object.userData.sectionHelper) continue;
+    for (let o = hit.object; o; o = o.parent) {
+      if (o.userData.windowId != null) { emit('select', o.userData.windowId); return; }
+    }
+  }
 }
 
 function applySection() {
@@ -260,7 +425,7 @@ function applySection() {
   planeY.constant = y_m;
   const clip = planes.filter((_, i) => active[i]);
   for (const m of current.materials()) m.clippingPlanes = clip;
-  caps.update(active);
+  caps?.update(active);
   invalidate(true);
 }
 
@@ -303,21 +468,42 @@ function recenter() {
   fitStage();
 }
 
-watch(() => props.model, attach);
+/** After windows were added or removed: keep the viewing direction, re-aim at the centre and fit the distance. */
+function fit() {
+  if (!current) return;
+  const b = current.getBounds();
+  const target = b.getCenter(new THREE.Vector3());
+  const size = b.getSize(new THREE.Vector3());
+  const dir = camera.position.clone().sub(controls.target);
+  if (dir.lengthSq() < 1e-12) dir.set(0.35, 0.15, 1);
+  const f = Math.max(size.x / camera.aspect, size.y, size.z) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
+  camera.position.copy(target).addScaledVector(dir.normalize(), f * 1.45 + Math.min(size.z, 0.3));
+  controls.target.copy(target);
+  controls.update();
+  fitStage();
+}
+
+watch(() => props.assembly, attach);
+watch(() => props.version, () => { rebuild(); buildChips(); });
+watch(() => props.controls, buildChips);
+watch(() => [props.selected, props.showControls], () => { placeOverlays(); invalidate(false); });
 watch(() => props.section, applySection, { deep: true });
 watch(() => props.sectionCoreColor, (c) => { caps?.setColor('pvc', capTint(c)); invalidate(false); });
 watch(() => [props.ao, props.explode], () => invalidate(false));
-onMounted(() => { init(); attach(props.model); });
+onMounted(() => { init(); attach(props.assembly); });
 onBeforeUnmount(() => {
   cancelAnimationFrame(frame);
   resizeObs?.disconnect();
+  renderer?.domElement.removeEventListener('pointerdown', onPointerDown);
+  renderer?.domElement.removeEventListener('pointerup', onPointerUp);
+  clearChips();
   caps?.dispose();
   controls?.dispose();
   composer?.dispose();
   renderer?.dispose();
 });
 
-defineExpose({ view, recenter, invalidate });
+defineExpose({ view, recenter, fit, invalidate });
 </script>
 
 <template>
@@ -328,6 +514,16 @@ defineExpose({ view, recenter, invalidate });
 <style scoped>
 .viewer { position: absolute; inset: 0; }
 .viewer :deep(canvas) { display: block; width: 100%; height: 100%; touch-action: none; }
+.viewer :deep(.grid-chips) { position: absolute; top: 0; left: 0; pointer-events: none; }
+.viewer :deep(.gz-label), .viewer :deep(.gz-add) {
+  pointer-events: auto; cursor: pointer; border: 1px solid #c9ced6; background: rgba(255, 255, 255, 0.92);
+  color: #1d232b; font: 600 12px system-ui, sans-serif; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+.viewer :deep(.gz-label) { padding: 3px 8px; border-radius: 999px; }
+.viewer :deep(.gz-label.on) { background: #2563eb; border-color: #2563eb; color: #fff; }
+.viewer :deep(.gz-add) { width: 24px; height: 24px; padding: 0; border-radius: 50%; display: grid; place-items: center; color: #2563eb; }
+.viewer :deep(.gz-label:hover), .viewer :deep(.gz-add:hover) { border-color: #2563eb; }
+.viewer :deep(.gz-add:hover) { background: #2563eb; color: #fff; }
 .stats {
   position: absolute; right: 12px; bottom: 12px; font: 12px ui-monospace, Consolas, monospace;
   color: #4b5563; background: rgba(255, 255, 255, 0.8); padding: 3px 7px; border-radius: 6px; pointer-events: none;
