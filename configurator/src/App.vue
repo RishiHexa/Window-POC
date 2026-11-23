@@ -519,8 +519,8 @@ onMounted(async () => {
         </div>
         <label class="inline"><input type="checkbox" v-model="showScenery" /> Wall, room and sky</label>
         <p v-if="showScenery" class="muted small">
-          Scenery only, not an installation detail: the wall's faces line up with the frame front and the extension's
-          interior edge. Sill height, room size and finishes are POC placeholders. Hidden in exploded and section views.
+          Scenery only, not an installation detail: windows line up on the jamb extension's interior edge, flush with
+          the wall's interior face; the wall's exterior face lines up with the deepest frame's front. Sill height, room size and finishes are POC placeholders. Hidden in exploded and section views.
         </p>
         <label class="inline"><input type="checkbox" v-model="ao" /> Ambient occlusion</label>
         <p v-if="ao && sectionMode !== 'off'" class="muted small">Ambient occlusion is paused while a section is shown.</p>

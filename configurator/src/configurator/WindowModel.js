@@ -332,7 +332,10 @@ export class WindowModel {
         deformPositions(ref, pos.array, p.cfg, dW, dH);
         pos.needsUpdate = true;
         mesh.geometry.computeBoundingBox();
-        mesh.geometry.computeBoundingSphere();
+        // Sphere around the box instead of computeBoundingSphere() (a second pass over every vertex, about half of
+        // a resize step). three.js only uses it for frustum culling and as a raycast early-out, where a slightly
+        // larger sphere is still correct.
+        mesh.geometry.boundingSphere = mesh.geometry.boundingBox.getBoundingSphere(mesh.geometry.boundingSphere ?? new THREE.Sphere());
       }
     }
     for (const [ci, c] of this.clips.entries()) {

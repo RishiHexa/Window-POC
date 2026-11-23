@@ -10,7 +10,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as THREE from 'three';
 import { loadGltf, WindowModel } from '../src/configurator/WindowModel.js';
-import { WindowAssembly } from '../src/configurator/WindowAssembly.js';
+import { WindowAssembly, jambBack_m, JAMB_EXTENSION_ASSEMBLY } from '../src/configurator/WindowAssembly.js';
 import { placeAll, placeOn, overlaps, checkAdd, checkResize, checkRemove, removeFrom, extents } from '../src/configurator/assembly.js';
 import { inToM } from '../src/configurator/deform.js';
 
@@ -140,6 +140,39 @@ check(a.units.length === 4 && new Set(a.models).size === 4, 'four independent mo
   m1.setExplode(0);
 }
 
+// Depth alignment: every window's jamb extension back edge (world z) lies on one plane, the deepest one's.
+// Window_V3 extension back -8.229 in, Casement_V4 -7.375 in (GLB data), so casements move 0.854 in to the interior.
+const extBackWorld = (u) => {
+  u.holder.updateMatrixWorld(true);
+  const b = new THREE.Box3();
+  for (const p of u.model.parts) if (p.cfg.assembly === JAMB_EXTENSION_ASSEMBLY) b.expandByObject(p.object);
+  return b.min.z;
+};
+function jambsAligned(label) {
+  const zs = a.units.map(extBackWorld);
+  check(zs.every((z) => near(z, zs[0], 1e-9)), `${label}: extension back edges aligned (${zs.map((z) => (z / 0.0254).toFixed(4)).join(', ')} in)`);
+  check(near(zs[0], Math.min(...a.units.map((u) => jambBack_m(u.model))), 1e-12), `${label}: shared plane is the deepest extension`);
+  check(near(a.restDepth_m().min, zs[0], 1e-9), `${label}: rest depth min is the shared jamb plane`);
+}
+jambsAligned('initial');
+check(near(jambBack_m(m1) / 0.0254, -8.229, 1e-3) && near(jambBack_m(m2) / 0.0254, -7.375, 1e-3), 'extension back edges read from GLB data');
+check(a.depthOffset_m(id1) === 0 && a.depthOffset_m(id3) === 0, 'double-hungs (deepest extension) stay at z = 0');
+check(near(a.depthOffset_m(id2) / 0.0254, -0.854, 1e-3) && a.depthOffset_m(id2) === a.depthOffset_m(id4), 'casements move 0.854 in to the interior');
+{
+  // A casement-only layout keeps its frame front at z = 0, as before.
+  const solo = new WindowAssembly();
+  const mc = await make(CS);
+  const sid = solo.add(mc, { w: 24, h: 36, type: TC, colors: {} });
+  check(solo.depthOffset_m(sid) === 0 && near(solo.restDepth_m().max, 0, 1e-6), 'single casement stays at z = 0');
+  solo.dispose();
+  // A type with no jamb extension is refused, not placed at a guessed depth.
+  const mx = await make(CS);
+  for (const p of mx.parts) if (p.cfg.assembly === JAMB_EXTENSION_ASSEMBLY) p.cfg = { ...p.cfg, assembly: 'NotExtension' };
+  const lone = new WindowAssembly();
+  check(throws(() => lone.add(mx, { w: 24, h: 36, type: TC, colors: {} })) && lone.units.length === 0, 'type without a jamb extension is refused');
+  mx.dispose();
+}
+
 // Nothing shared between windows of the same type.
 const geoms = (m) => new Set(m.parts.flatMap((p) => p.meshes.map((x) => x.mesh.geometry)));
 const g1 = geoms(m1), g3 = geoms(m3);
@@ -187,12 +220,14 @@ a.replaceModel(id3, mC, TC);
 check(a.get(id3).type.key === TC.key && a.get(id3).model === mC, 'W3 is now a casement');
 check(rectIs(a.rects().get(id3), before.x, before.y, before.w, before.h), 'type change keeps the rectangle');
 boundsMatchLayout('after W3 type change');
+jambsAligned('after W3 type change');
 
 // Explode spreads windows; 0 restores the exact layout positions.
 a.setExplode(1);
 check(a.worldRect(id4).y < inToM(a.rects().get(id4).y), 'exploded: lower window moves down');
 a.setExplode(0);
-check(a.units.every((u) => { const r = a.rects().get(u.id); const p = u.holder.position; return p.x === inToM(r.x) && p.y === inToM(r.y) && p.z === 0; }), 'explode 0 restores exact positions');
+check(a.units.every((u) => { const r = a.rects().get(u.id); const p = u.holder.position; return p.x === inToM(r.x) && p.y === inToM(r.y) && p.z === a.depthOffset_m(u.id); }), 'explode 0 restores exact positions');
+jambsAligned('after explode round trip');
 boundsMatchLayout('after explode round trip');
 
 // Remove
@@ -203,6 +238,7 @@ a.remove(id3);
 a.remove(id1); // root with one attached window (W2) → W2 becomes root
 check(a.units.length === 1 && a.units[0].id === id2 && a.units[0].parent === null, 'W2 is the new root');
 check(rectIs(a.rects().get(id2), 0, 0, 24, 36), 'new root at the origin');
+check(a.depthOffset_m(id2) === 0 && a.units[0].holder.position.z === 0, 'only casement left: back at z = 0');
 boundsMatchLayout('after removals');
 check(throws(() => a.remove(id2)), 'last window cannot be removed');
 

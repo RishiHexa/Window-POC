@@ -3,7 +3,13 @@
 // size, colours and animation. Placement comes from assembly.js (pure layout, inches).
 //
 // VISUAL ONLY. The joint between windows (mullion / coupler / mull cover) is NOT modelled: there is no documented
-// data for it, so nothing is invented. Windows are butted frame to frame. Overall sizes are only the extents of the
+// data for it, so nothing is invented. Windows are butted frame to frame.
+//
+// Depth alignment: windows of different types have different frame depths (Window_V3 3.979 in, Casement_V4
+// 3.250 in). They are lined up on the interior (back) edge of their jamb extension, where the extension meets the
+// interior wall finish, not on the frame or sash front. The window(s) with the deepest extension stay at z = 0 and
+// the others move toward the interior, so the front faces step where frame depths differ. The extension is found from
+// the GLB's own cfg (parts with cfg.assembly "Extension"); a window type without one cannot be aligned and is refused. Overall sizes are only the extents of the
 // frame outside sizes and are not order, mulling or manufacturing dimensions. Each window still deforms only through
 // WindowModel (split-plane stretch).
 //
@@ -13,6 +19,24 @@
 import * as THREE from 'three';
 import { inToM } from './deform.js';
 import { placeAll, extents, checkAdd, checkResize, checkRemove, removeFrom } from './assembly.js';
+
+/** cfg.assembly of the jamb extension parts. Their most interior face is the depth alignment plane. */
+export const JAMB_EXTENSION_ASSEMBLY = 'Extension';
+
+/**
+ * Interior (back) edge of a model's jamb extension, in model space (m): the minimum z of the extension parts'
+ * reference positions, which are the GLB's own values (resizing never moves z, see deform.js). Throws if the model
+ * has no extension, so an unalignable window is never placed at a guessed depth.
+ */
+export function jambBack_m(model) {
+  let min = Infinity;
+  for (const p of model.parts) {
+    if (p.cfg.assembly !== JAMB_EXTENSION_ASSEMBLY) continue;
+    for (const { ref } of p.meshes) for (let i = 2; i < ref.length; i += 3) if (ref[i] < min) min = ref[i];
+  }
+  if (!Number.isFinite(min)) throw new RangeError(`This window type has no jamb extension (cfg.assembly "${JAMB_EXTENSION_ASSEMBLY}"), so its depth cannot be aligned with the other windows`);
+  return min;
+}
 
 // How far exploded windows move apart, as a fraction of their centre's distance from the assembly centre, so that
 // each window's own exploded parts don't run into its neighbours'. Presentation only.
@@ -57,13 +81,14 @@ export class WindowAssembly {
       const c = this.checkAdd(parent, side, w, h);
       if (!c.ok) throw new RangeError(c.reason);
     }
+    const jambBack = jambBack_m(model); // throws before changing anything if the type has no extension
     model.setSize(inToM(w), inToM(h)); // throws RangeError below the model's geometric limit, before changing anything
     const id = this.nextId++;
     const holder = new THREE.Group();
     holder.name = `Window_${id}`;
     holder.userData.windowId = id;
     holder.add(model.scene);
-    const unit = { id, parent: this.units.length ? parent : null, side: this.units.length ? side : null, w, h, model, holder, type, colors: { ...colors } };
+    const unit = { id, parent: this.units.length ? parent : null, side: this.units.length ? side : null, w, h, model, holder, type, colors: { ...colors }, jambBack };
     this.#applyColors(unit);
     this.units.push(unit);
     this.scene.add(holder);
@@ -99,15 +124,18 @@ export class WindowAssembly {
    */
   replaceModel(id, model, type) {
     const u = this.#unit(id);
+    const jambBack = jambBack_m(model);
     model.setSize(inToM(u.w), inToM(u.h));
     u.model.stop();
     u.holder.remove(u.model.scene);
     u.model.dispose();
     u.model = model;
     u.type = type;
+    u.jambBack = jambBack;
     u.holder.add(model.scene);
     this.#applyColors(u);
     model.setExplode(this.explode);
+    this.#place(); // a different frame depth can move this window, or all others, in z
   }
 
   setColor(id, zone, hex) {
@@ -132,19 +160,24 @@ export class WindowAssembly {
     return { x: p.x, y: p.y, w: inToM(u.w), h: inToM(u.h) };
   }
 
+  /** World z offset of window `id` from the depth alignment (m, <= 0). Explode does not change it. */
+  depthOffset_m(id) { return this.#depthOffset(this.#unit(id)); }
+
   /**
-   * Depth range of all windows at rest, in metres: { min, max } along z (+z is the exterior). Read from the parts'
-   * deformed geometry, which explode and sash animation never change (they move nodes, not vertices). For the bundled
-   * GLBs, max is the frame's exterior face and min is the extension's interior edge. Presentation only.
+   * Depth range of all windows at rest, in metres: { min, max } along z (+z is the exterior), including each window's
+   * depth alignment offset. Read from the parts' deformed geometry, which explode and sash animation never change
+   * (they move nodes, not vertices). For the bundled GLBs, min is the shared extension interior edge and max is the
+   * exterior face of the deepest frame. Presentation only.
    */
   restDepth_m() {
     let min = Infinity, max = -Infinity;
     for (const u of this.units) {
+      const dz = this.#depthOffset(u);
       for (const p of u.model.parts) {
         for (const { mesh } of p.meshes) {
           if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-          min = Math.min(min, mesh.geometry.boundingBox.min.z);
-          max = Math.max(max, mesh.geometry.boundingBox.max.z);
+          min = Math.min(min, mesh.geometry.boundingBox.min.z + dz);
+          max = Math.max(max, mesh.geometry.boundingBox.max.z + dz);
         }
       }
     }
@@ -188,6 +221,12 @@ export class WindowAssembly {
     for (const [zone, hex] of Object.entries(u.colors)) u.model.setZoneColor(zone, hex);
   }
 
+  /** Shared alignment plane: the deepest jamb extension back edge among all windows (m). */
+  #jambPlane() { return Math.min(...this.units.map((u) => u.jambBack)); }
+
+  /** z shift that puts this window's extension back edge on the shared plane (0 for the deepest window). */
+  #depthOffset(u) { return this.#jambPlane() - u.jambBack; }
+
   /** Holder positions from the layout (inches → metres), plus the explode spread. explode 0 gives the exact layout. */
   #place() {
     if (!this.units.length) return;
@@ -195,11 +234,12 @@ export class WindowAssembly {
     const e = extents(rects);
     const cx = (e.minX + e.maxX) / 2, cy = (e.minY + e.maxY) / 2;
     const k = EXPLODE_SPREAD * this.explode;
+    const plane = this.#jambPlane();
     for (const u of this.units) {
       const r = rects.get(u.id);
       let x = r.x, y = r.y;
       if (k) { x += (r.x + r.w / 2 - cx) * k; y += (r.y + r.h / 2 - cy) * k; }
-      u.holder.position.set(inToM(x), inToM(y), 0);
+      u.holder.position.set(inToM(x), inToM(y), plane - u.jambBack);
     }
   }
 }

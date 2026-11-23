@@ -26,10 +26,13 @@ import { SectionCaps, LAYER_HELPERS } from '../configurator/SectionCaps.js';
 import { FrameGovernor, QUALITY_LEVELS } from '../configurator/FrameGovernor.js';
 import { Scenery } from '../configurator/Scenery.js';
 import { inToM } from '../configurator/deform.js';
+import { applySurfaceDetail, surfaceDetailUniforms } from '../configurator/surfaceDetail.js';
 
 const LAYER_GLASS = 3; // rendered, but kept out of the AO normal pass
-// Wall, room and ground: rendered and shadowed, but kept out of the AO pass. GTAO over the deep room seen through the
-// glass and the large wall planes around the frames gave full (black) occlusion; AO is only needed on the product.
+// Wall, room and sky: rendered and shadowed on their own layer. The AO camera includes this layer so the wall hides
+// what is behind it: without it, AO computed on window parts behind the wall (extension heads, an open casement arm)
+// was blended onto the wall pixels in front of them and showed through as ghost outlines. The room seen through the
+// glass lies outside the AO clip box (model bounds + 0.3 m, see fitStage), so it gets no AO and does not go black.
 const LAYER_SCENERY = 4;
 
 const props = defineProps({
@@ -77,21 +80,22 @@ function invalidate(sceneChanged = true) {
   if (sceneChanged) needsShadow = true;
 }
 
-// Lighting (presentation only). The profile detail on white PVC only reads if light is directional and rakes across
-// the profile steps. Ambient (environment + hemisphere) is kept low, so faces turned away from the key are darker.
+// Lighting (presentation only). The profile detail on PVC only reads if light is directional and rakes across the
+// profile steps. Ambient (environment + hemisphere) is kept low, so faces turned away from the key are darker.
 // The key comes from the upper left, the opposite side from the default camera (front right), so the shadows that
 // the frame and sash steps cast into the reveals face the viewer. A weak fill from the right keeps those faces from
 // going dead. Colours are unchanged: only the light on them is.
+// 2026-11-23 retune (user: "too flat and too bright", then "too dark"): key more raking (lower z) and AO wider for
+// relief; exposure back at 1.0 and ambient about three quarters of the original, so colours read at their normal
+// brightness while faces turned away from the key stay clearly darker than the front faces.
 const LIGHTING = {
   exposure: 1.0,
-  // Front faces get about the same light as before this tuning (key·n + ambient ≈ 1.8 vs 1.67), so a colour still
-  // reads as itself; faces turned right or down drop to roughly a third of that.
-  environment: 0.38,
-  hemisphere: 0.18,
-  key: { intensity: 2.0, dir: [-0.75, 1.05, 1.0] },  // × stage radius, from the model centre
-  fill: { intensity: 0.32, dir: [1, 0.25, 0.55] },
+  environment: 0.28,
+  hemisphere: 0.12,
+  key: { intensity: 2.6, dir: [-0.95, 1.15, 0.6] },  // × stage radius, from the model centre
+  fill: { intensity: 0.26, dir: [1, 0.25, 0.55] },
   groundShadow: 0.2,
-  ao: { radius: 0.05, scale: 1.5, blend: 1.0 },
+  ao: { radius: 0.08, scale: 2.0, blend: 1.0 },
 };
 
 function init() {
@@ -146,6 +150,10 @@ function init() {
   // Post-processing: MSAA scene target (with stencil for section caps), then GTAO, then the output transform.
   const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4, stencilBuffer: true });
   composer = new EffectComposer(renderer, rt);
+  // Nothing reads these targets' depth or stencil after a pass: the section caps use the stencil inside the MSAA
+  // render, and GTAO renders its own depth. Resolving them anyway (three.js' default) cost ~11 ms per pass on
+  // ANGLE / D3D11 (measured 15 → 3.9 ms for the main pass, 19 → <1 ms for the AO blend). Colour is still resolved.
+  for (const t of [composer.renderTarget1, composer.renderTarget2]) { t.resolveDepthBuffer = false; t.resolveStencilBuffer = false; }
   gtaoPass = new GTAOPass(scene, aoCamera, 1, 1);
   gtaoPass.updateGtaoMaterial({ radius: LIGHTING.ao.radius, distanceExponent: 1.5, thickness: 0.6, scale: LIGHTING.ao.scale, samples: 8 });
   gtaoPass.updatePdMaterial({ radius: 6, samples: 8 });
@@ -171,6 +179,8 @@ function init() {
   renderer.domElement.addEventListener('pointerup', onPointerUp);
 
   applyQuality(governor.level);
+  // Dev server only (stripped from builds): handles for inspecting the renderer from the browser console.
+  if (import.meta.env.DEV) window.__viewer = { renderer, scene, camera, controls, composer, gtaoPass, keyLight, fillLight, invalidate, governor, surfaceDetail: surfaceDetailUniforms, get current() { return current; } };
   clock = new THREE.Clock();
   resizeObs = new ResizeObserver(resize);
   resizeObs.observe(host.value);
@@ -240,7 +250,8 @@ function loop(now = performance.now()) {
 
   if (needsShadow) { renderer.shadowMap.needsUpdate = true; needsShadow = false; }
   aoCamera.copy(camera);
-  aoCamera.layers.set(0); // AO sees opaque model + ground only (no glass, no section helpers)
+  aoCamera.layers.set(0); // AO sees the opaque model, ground and scenery (no glass, no section helpers)
+  aoCamera.layers.enable(LAYER_SCENERY);
   gtaoPass.enabled = props.ao && QUALITY_LEVELS[governor.level].ao && props.section.mode === 'off';
   needsRender = false;
   placeOverlays();
@@ -300,6 +311,8 @@ function prepareModel(model) {
       mesh.castShadow = !glass;
       mesh.receiveShadow = !glass;
       if (glass) mesh.layers.set(LAYER_GLASS);
+      // PVC only: fine grain and roughness variation so large faces are not perfectly smooth (presentation only).
+      if (p.cfg.role === 'profile') applySurfaceDetail(mesh.material);
     }
   }
   for (const m of model.materials()) {

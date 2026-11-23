@@ -20,7 +20,9 @@ export const SCENERY = {
   headroom_m: 0.3,            // ceiling above the highest window, when that is more than minCeiling
   roomSide_m: 1.5,            // room wider than the windows on each side
   roomDepth_m: 4.5,
-  roomLight: { intensity: 7, color: '#fff3e2' }, // ceiling light (candela, decay 2), so the interior is not ambient-only
+  // Ceiling light (candela, decay 2), so the interior is not ambient-only. Dimmer than before (was 7) so the room
+  // seen through the glass reads a little darker than the frames, as a real interior does from outside.
+  roomLight: { intensity: 5, color: '#fff3e2' },
   colors: {
     plaster: '#efece6', paint: '#e8e2d8', ceiling: '#f5f4f1', ground: '#8e9a74',
     skyTop: '#7ea7d1', skyHorizon: '#dde7ef',

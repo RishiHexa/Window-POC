@@ -12,7 +12,8 @@
     "test:deform": "node tools/test-deform.mjs",
     "test:casement": "node tools/test-casement.mjs",
     "test:assembly": "node tools/test-assembly.mjs",
-    "test:wall": "node tools/test-wall.mjs"
+    "test:wall": "node tools/test-wall.mjs",
+    "test:surface": "node tools/test-surface.mjs"
   },
   "dependencies": {
     "three": "0.171.0",
