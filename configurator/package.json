@@ -11,6 +11,7 @@
     "validate:casement": "node tools/validate-glb.mjs public/Casement_V4_cfg.glb --original ../glb/Casement_V4.glb",
     "test:deform": "node tools/test-deform.mjs",
     "test:casement": "node tools/test-casement.mjs",
+    "test:awning": "node tools/test-awning.mjs",
     "test:assembly": "node tools/test-assembly.mjs",
     "test:wall": "node tools/test-wall.mjs",
     "test:surface": "node tools/test-surface.mjs"

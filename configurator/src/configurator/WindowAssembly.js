@@ -9,7 +9,10 @@
 // 3.250 in). They are lined up on the interior (back) edge of their jamb extension, where the extension meets the
 // interior wall finish, not on the frame or sash front. The window(s) with the deepest extension stay at z = 0 and
 // the others move toward the interior, so the front faces step where frame depths differ. The extension is found from
-// the GLB's own cfg (parts with cfg.assembly "Extension"); a window type without one cannot be aligned and is refused. Overall sizes are only the extents of the
+// the GLB's own cfg (parts with cfg.assembly "Extension"). The extension is optional: windows without one sit with
+// their frame exterior face at z = 0 (the GLB origin plane). There is no documented depth relation between a window
+// with an extension and one without, so the two are never mixed in one assembly: an add or a type change that would
+// mix them is refused (user decision 2026-11-24), never placed at a guessed depth. Overall sizes are only the extents of the
 // frame outside sizes and are not order, mulling or manufacturing dimensions. Each window still deforms only through
 // WindowModel (split-plane stretch).
 //
@@ -25,8 +28,8 @@ export const JAMB_EXTENSION_ASSEMBLY = 'Extension';
 
 /**
  * Interior (back) edge of a model's jamb extension, in model space (m): the minimum z of the extension parts'
- * reference positions, which are the GLB's own values (resizing never moves z, see deform.js). Throws if the model
- * has no extension, so an unalignable window is never placed at a guessed depth.
+ * reference positions, which are the GLB's own values (resizing never moves z, see deform.js). Returns null if the
+ * model has no extension parts (the extension is optional; see the depth alignment note above).
  */
 export function jambBack_m(model) {
   let min = Infinity;
@@ -34,8 +37,7 @@ export function jambBack_m(model) {
     if (p.cfg.assembly !== JAMB_EXTENSION_ASSEMBLY) continue;
     for (const { ref } of p.meshes) for (let i = 2; i < ref.length; i += 3) if (ref[i] < min) min = ref[i];
   }
-  if (!Number.isFinite(min)) throw new RangeError(`This window type has no jamb extension (cfg.assembly "${JAMB_EXTENSION_ASSEMBLY}"), so its depth cannot be aligned with the other windows`);
-  return min;
+  return Number.isFinite(min) ? min : null;
 }
 
 // How far exploded windows move apart, as a fraction of their centre's distance from the assembly centre, so that
@@ -81,7 +83,8 @@ export class WindowAssembly {
       const c = this.checkAdd(parent, side, w, h);
       if (!c.ok) throw new RangeError(c.reason);
     }
-    const jambBack = jambBack_m(model); // throws before changing anything if the type has no extension
+    const jambBack = jambBack_m(model);
+    this.#checkDepthMix(jambBack, null); // throws before changing anything if it would mix with / without extension
     model.setSize(inToM(w), inToM(h)); // throws RangeError below the model's geometric limit, before changing anything
     const id = this.nextId++;
     const holder = new THREE.Group();
@@ -125,6 +128,7 @@ export class WindowAssembly {
   replaceModel(id, model, type) {
     const u = this.#unit(id);
     const jambBack = jambBack_m(model);
+    this.#checkDepthMix(jambBack, id);
     model.setSize(inToM(u.w), inToM(u.h));
     u.model.stop();
     u.holder.remove(u.model.scene);
@@ -167,7 +171,8 @@ export class WindowAssembly {
    * Depth range of all windows at rest, in metres: { min, max } along z (+z is the exterior), including each window's
    * depth alignment offset. Read from the parts' deformed geometry, which explode and sash animation never change
    * (they move nodes, not vertices). For the bundled GLBs, min is the shared extension interior edge and max is the
-   * exterior face of the deepest frame. Presentation only.
+   * exterior face of the deepest frame. For windows without an extension, min is the most interior geometry (usually
+   * the frame back) and max is the shared frame exterior face (0). Presentation only.
    */
   restDepth_m() {
     let min = Infinity, max = -Infinity;
@@ -221,11 +226,34 @@ export class WindowAssembly {
     for (const [zone, hex] of Object.entries(u.colors)) u.model.setZoneColor(zone, hex);
   }
 
-  /** Shared alignment plane: the deepest jamb extension back edge among all windows (m). */
-  #jambPlane() { return Math.min(...this.units.map((u) => u.jambBack)); }
+  /**
+   * Refuse a window whose extension presence differs from the other windows' (`exceptId` = the window being replaced).
+   * There is no documented depth relation between the two kinds, so they are never lined up against each other.
+   */
+  #checkDepthMix(jambBack, exceptId) {
+    const others = this.units.filter((u) => u.id !== exceptId);
+    if (!others.length) return;
+    const has = jambBack !== null;
+    if (others.every((u) => (u.jambBack !== null) === has)) return;
+    throw new RangeError(has
+      ? `This window type has a jamb extension (cfg.assembly "${JAMB_EXTENSION_ASSEMBLY}") and the other windows do not. There is no documented depth to line them up, so they cannot be combined`
+      : `This window type has no jamb extension (cfg.assembly "${JAMB_EXTENSION_ASSEMBLY}") and the other windows do. There is no documented depth to line them up, so they cannot be combined`);
+  }
 
-  /** z shift that puts this window's extension back edge on the shared plane (0 for the deepest window). */
-  #depthOffset(u) { return this.#jambPlane() - u.jambBack; }
+  /**
+   * Shared alignment plane (m): the deepest jamb extension back edge among all windows, or null when no window has an
+   * extension (they all keep their frame exterior face at z = 0). A mix is refused by #checkDepthMix; if one ever got
+   * through, this throws instead of placing windows at a guessed depth.
+   */
+  #jambPlane() {
+    const backs = this.units.map((u) => u.jambBack);
+    if (backs.every((b) => b === null)) return null;
+    if (backs.some((b) => b === null)) throw new Error('Windows with and without a jamb extension are mixed; their depth cannot be aligned');
+    return Math.min(...backs);
+  }
+
+  /** z shift that puts this window's extension back edge on the shared plane (0 for the deepest window, 0 without extensions). */
+  #depthOffset(u, plane = this.#jambPlane()) { return plane === null ? 0 : plane - u.jambBack; }
 
   /** Holder positions from the layout (inches → metres), plus the explode spread. explode 0 gives the exact layout. */
   #place() {
@@ -239,7 +267,7 @@ export class WindowAssembly {
       const r = rects.get(u.id);
       let x = r.x, y = r.y;
       if (k) { x += (r.x + r.w / 2 - cx) * k; y += (r.y + r.h / 2 - cy) * k; }
-      u.holder.position.set(inToM(x), inToM(y), plane - u.jambBack);
+      u.holder.position.set(inToM(x), inToM(y), this.#depthOffset(u, plane));
     }
   }
 }

@@ -11,7 +11,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ROOT_SCHEMA, PART_SCHEMA, GROUP_SCHEMA, HINGE_SCHEMA, HINGE_PIVOT_ROLES, HINGE_OFFSET_ROLES,
-  validateNodeCfg, animationMotion, animationDirection,
+  validateNodeCfg, animationMotion, animationDirection, quaternionAxisError,
 } from '../src/configurator/schema.js';
 import { collapseDelta } from '../src/configurator/deform.js';
 
@@ -149,11 +149,17 @@ if (root) {
       const close = animationDirection(a) === 'close';
       const owner = close ? hingePivots.find((p) => p.cfg.closeClip === a.clip && p.node.name === a.node) : null;
       if (close && !owner) errors.push(`clip "${a.clip}" (direction close): no hinge pivot "${a.node}" names it as closeClip`);
+      const nodePivot = hingePivots.find((p) => p.node.name === a.node);
+      if (nodePivot && a.axis !== nodePivot.cfg.axis) errors.push(`root animations: clip "${a.clip}" axis "${a.axis}" differs from hinge ${a.node} axis "${nodePivot.cfg.axis}"`);
       const drives = (p) => p.cfg.clip === a.clip || p.cfg.closeClip === a.clip || (owner && p.cfg.clip === owner.cfg.clip);
       for (const c of anim.channels) {
         const h = hingePivots.find((p) => p.index === c.target.node);
         if (!h || !drives(h)) errors.push(`clip "${a.clip}": channel on ${nodes[c.target.node]?.name}.${c.target.path} does not drive a hinge pivot of this clip`);
         else if (!['rotation', 'translation'].includes(c.target.path)) errors.push(`clip "${a.clip}": ${c.target.path} channels are not supported on hinges`);
+        else if (c.target.path === 'rotation') {
+          const axisErr = quaternionAxisError(readAccessor(glb, anim.samplers[c.sampler].output), h.cfg.axis);
+          if (axisErr) errors.push(`clip "${a.clip}": ${h.node.name}.rotation ${axisErr}`);
+        }
         else if (c.target.path === 'translation') {
           const out = readAccessor(glb, anim.samplers[c.sampler].output);
           const key = close ? out.slice(out.length - 3) : out.slice(0, 3);

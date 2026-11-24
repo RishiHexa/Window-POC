@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import {
   ROOT_SCHEMA, PART_SCHEMA, GROUP_SCHEMA, HINGE_SCHEMA, HINGE_PIVOT_ROLES, HINGE_OFFSET_ROLES,
-  validateNodeCfg, animationMotion, animationDirection,
+  validateNodeCfg, animationMotion, animationDirection, quaternionAxisError,
 } from './schema.js';
 import { deformPositions, collapseDelta, travelFactor, rigidFitDelta } from './deform.js';
 import { explodeDirection, EXPLODE_SCALE } from './explode.js';
@@ -246,7 +246,12 @@ export class WindowModel {
       const hinge = this.hinges.find((h) => h.name === nodeName);
       if (!hinge || !drives(hinge)) { errs.push(`Clip "${a.clip}": track ${track.name} does not drive a hinge pivot of this clip`); continue; }
       driven.add(`${nodeName}.${propertyName}`);
-      if (propertyName === 'quaternion') continue;
+      if (propertyName === 'quaternion') {
+        // The rotation must turn about the pivot's declared axis (y = casement, x = awning / hopper).
+        const axisErr = quaternionAxisError(track.values, hinge.cfg.axis);
+        if (axisErr) errs.push(`Clip "${a.clip}": ${track.name} ${axisErr}`);
+        continue;
+      }
       if (propertyName !== 'position') { errs.push(`Clip "${a.clip}": ${propertyName} tracks are not supported on hinges`); continue; }
       const v = track.values;
       const k = close ? v.length - 3 : 0;
@@ -256,7 +261,9 @@ export class WindowModel {
       posTracks.push({ track, refValues: v.slice(), hinge });
     }
     const node = nodeKey(String(a.node));
-    if (!this.hinges.some((h) => h.name === node)) errs.push(`Clip "${a.clip}": animation node "${a.node}" is not a hinge pivot`);
+    const nodeHinge = this.hinges.find((h) => h.name === node);
+    if (!nodeHinge) errs.push(`Clip "${a.clip}": animation node "${a.node}" is not a hinge pivot`);
+    else if (a.axis !== nodeHinge.cfg.axis) errs.push(`Clip "${a.clip}": root animation axis "${a.axis}" differs from hinge ${a.node} axis "${nodeHinge.cfg.axis}"`);
     if (!driven.has(`${node}.quaternion`)) errs.push(`Clip "${a.clip}" has no rotation track on ${a.node}`);
     if (motion === 'rotate+slide' && !driven.has(`${node}.position`)) errs.push(`Clip "${a.clip}" has no translation track on ${a.node}`);
     this.errors.push(...errs);

@@ -11,6 +11,7 @@ npm run validate       # validate public/Window_V3_cfg.glb (schema, split planes
 npm run test:deform    # headless WindowModel checks (joints, mitre rigidity, reset, animation travel, colours)
 npm run validate:casement   # validate public/Casement_V4_cfg.glb (additive-only vs ../glb/Casement_V4.glb)
 npm run test:casement  # headless casement checks (hinge pivots, 90° swing, shoe slide, linkage closure, resize while open)
+npm run test:awning    # horizontal hinge axis (awning / hopper) on a synthetic model: swing, head pivot on resize, refusals
 npm run test:assembly  # multi-window layout + WindowAssembly with Window_V3 and Casement_V4 side by side
 npm run test:wall      # scenery wall geometry (areas, reveals, winding, closed solid)
 node tools/test-governor.mjs   # adaptive-quality (60 fps) logic
@@ -47,6 +48,11 @@ Each part's cfg defines a split plane per axis. Vertices below the split move by
 
 The casement GLB adds `davinci.window.hinge/1` pivot/offset node pairs and a root animation with `motion: "rotate"` or `"rotate+slide"`. Both are additive: an animation entry without `motion` still means translate, and the double-hung behaves exactly as before.
 
+- **Hinge axis.** `axis: "y"` is a vertical hinge (casement, `hingeSide` left or right). `axis: "x"` is a horizontal hinge (awning hinged at the head, hopper at the sill, `hingeSide` top or bottom), added additively on 2026-11-24.
+  - Every rotation key of a pivot must turn about that pivot's own axis.
+  - The root animation's `axis` must equal its pivot's axis.
+  - An awning's head pivot uses `pivotFactor.y = 1`, so it follows the head on resize.
+  - No real awning GLB exists yet. The axis-x path is covered by a synthetic model in `tools/test-awning.mjs`.
 - **Hinge nodes.** A pivot node holds P. Its child offset node holds −P, so the meshes below keep absolute reference coordinates. On load, the pair must cancel exactly and P must equal `cfg.pivot_m`. Otherwise the GLB is rejected.
 - **Resize.** Each pivot moves to `P + (ΔW × pivotFactor.x, ΔH × pivotFactor.y, 0)` and its offset moves to the negation. The clip's translation keys (absolute pivot path) get the same shift. They are **not scaled**, because the opening angle and the hinge's shoe slide are fixed hardware values.
 - **Resize while open.** Hinge actions are stopped and then resumed at the same time. That way **Close** returns to the new rest pose instead of the one saved when the clip started.
@@ -63,7 +69,8 @@ The casement GLB adds `davinci.window.hinge/1` pivot/offset node pairs and a roo
 
 - **Wall, room and sky** (the **Wall** button or `&wall=0`; `src/configurator/Scenery.js`, `wall.js`). This is scenery only, not an installation detail:
   - **Wall.** Brick outside and painted plaster inside, with an opening at exactly each window's frame outside rectangle.
-  - **Wall faces.** The exterior face is flush with the frame front. The interior face is at the deepest extension edge, where an extension jamb meets the interior finish. Both are read from the GLBs (`WindowAssembly.restDepth_m()`).
+  - **Wall faces.** The exterior face is flush with the frame front. The interior face is at the deepest extension edge, where an extension jamb meets the interior finish. For window types without an extension, it is at the deepest part of the window. Both are read from the GLBs (`WindowAssembly.restDepth_m()`).
+  - **Depth alignment.** Windows are lined up on their extension's interior edge. The extension (`cfg.assembly "Extension"`) is optional. Windows without one keep their frame front at z = 0. A layout never mixes windows with and without an extension: an add or a type change that would mix them is refused, because there is no documented depth relation between them.
   - **Inside and outside.** Inside is a room with a wood floor and a ceiling light. Outside are a lawn and a gradient sky dome. Looking from outside, you see the room through the glass, and from inside you see the sky.
   - **Placeholders.** Sill height (30 in), wall and room size, finishes and the room light are POC placeholders in `SCENERY`.
   - **Hidden** in exploded and section views.

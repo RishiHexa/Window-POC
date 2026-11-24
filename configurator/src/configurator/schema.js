@@ -19,6 +19,26 @@ export const COLOURABLE_ZONES = ['exterior', 'interior'];
 export const HINGE_PIVOT_ROLES = ['hingePivot', 'linkPivot'];
 export const HINGE_OFFSET_ROLES = ['hingeOffset', 'linkOffset'];
 export const HINGE_MOTIONS = ['rotate', 'slider-crank'];
+// Hinge axes. "y" = vertical (casement, Casement_V1+). "x" = horizontal (awning hinged at the head, hopper at the sill),
+// added 2026-11-24. The hinge side must lie on that axis: a vertical axis is on a jamb, a horizontal one on head or sill.
+export const HINGE_AXES = ['y', 'x'];
+export const HINGE_SIDES = { y: ['left', 'right'], x: ['top', 'bottom'] };
+
+/**
+ * Error text if a quaternion track's keys ([x, y, z, w] per key) rotate about anything other than `axis`, else null.
+ * A rotation about one principal axis has zero in the other two vector components.
+ */
+export function quaternionAxisError(values, axis, tol = 1e-6) {
+  const k = { x: 0, y: 1, z: 2 }[axis];
+  for (let i = 0; i + 3 < values.length; i += 4) {
+    for (let j = 0; j < 3; j++) {
+      if (j !== k && Math.abs(values[i + j]) > tol) {
+        return `key ${i / 4} does not rotate about the ${axis} axis (q = [${Array.from(values.slice(i, i + 4), (v) => +v.toFixed(6)).join(', ')}])`;
+      }
+    }
+  }
+  return null;
+}
 
 // Root animation entries. Missing `motion` = 'translate' (Window_V3 behaviour).
 export const ANIMATION_MOTIONS = ['translate', 'rotate', 'rotate+slide'];
@@ -73,12 +93,13 @@ export function validateHingeCfg(name, cfg) {
   if (HINGE_PIVOT_ROLES.includes(cfg.role)) {
     if (typeof cfg.clip !== 'string') errs.push(`${name}: clip must be a string`);
     if (typeof cfg.offsetNode !== 'string') errs.push(`${name}: offsetNode must be a string`);
-    if (cfg.axis !== 'y') errs.push(`${name}: axis must be "y" (only vertical hinge axes are supported)`);
+    if (!HINGE_AXES.includes(cfg.axis)) errs.push(`${name}: axis must be "y" (vertical: casement) or "x" (horizontal: awning / hopper)`);
     if (!isVec3(cfg.pivot_m)) errs.push(`${name}: pivot_m must be [x, y, z] numbers`);
     const f = cfg.pivotFactor;
     if (!f || !isNum(f.x) || !isNum(f.y)) errs.push(`${name}: pivotFactor.x and pivotFactor.y must be numbers`);
     if (cfg.role === 'hingePivot') {
-      if (!['left', 'right'].includes(cfg.hingeSide)) errs.push(`${name}: hingeSide must be left|right`);
+      const sides = HINGE_SIDES[cfg.axis];
+      if (sides && !sides.includes(cfg.hingeSide)) errs.push(`${name}: hingeSide must be ${sides.join('|')} for axis "${cfg.axis}"`);
       if (!['outward', 'inward'].includes(cfg.opens)) errs.push(`${name}: opens must be outward|inward`);
       if (cfg.motion !== undefined && !HINGE_MOTIONS.includes(cfg.motion)) errs.push(`${name}: motion must be one of ${HINGE_MOTIONS.join('|')}`);
       if (cfg.closeClip !== undefined && typeof cfg.closeClip !== 'string') errs.push(`${name}: closeClip must be a string`);

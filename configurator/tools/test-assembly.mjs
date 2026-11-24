@@ -165,12 +165,46 @@ check(near(a.depthOffset_m(id2) / 0.0254, -0.854, 1e-3) && a.depthOffset_m(id2) 
   const sid = solo.add(mc, { w: 24, h: 36, type: TC, colors: {} });
   check(solo.depthOffset_m(sid) === 0 && near(solo.restDepth_m().max, 0, 1e-6), 'single casement stays at z = 0');
   solo.dispose();
-  // A type with no jamb extension is refused, not placed at a guessed depth.
-  const mx = await make(CS);
-  for (const p of mx.parts) if (p.cfg.assembly === JAMB_EXTENSION_ASSEMBLY) p.cfg = { ...p.cfg, assembly: 'NotExtension' };
+  // The jamb extension is optional. A type without one sits with its frame exterior face at z = 0. It is never lined
+  // up against a type that has one (no documented depth relation), so mixing the two is refused, not guessed.
+  const makeNoExt = async () => {
+    const m = await make(CS);
+    for (const p of m.parts) if (p.cfg.assembly === JAMB_EXTENSION_ASSEMBLY) p.cfg = { ...p.cfg, assembly: 'NotExtension' };
+    return m;
+  };
+  const TN = { key: 'noext', label: 'Casement without extension' };
+  const n1 = await makeNoExt();
+  check(jambBack_m(n1) === null, 'no extension parts: jambBack_m is null');
   const lone = new WindowAssembly();
-  check(throws(() => lone.add(mx, { w: 24, h: 36, type: TC, colors: {} })) && lone.units.length === 0, 'type without a jamb extension is refused');
-  mx.dispose();
+  const nid1 = lone.add(n1, { w: 24, h: 36, type: TN, colors: {} });
+  check(lone.units.length === 1 && lone.depthOffset_m(nid1) === 0 && lone.units[0].holder.position.z === 0, 'type without an extension is accepted, frame front at z = 0');
+  const allMinZ = (m) => Math.min(...m.parts.flatMap((p) => p.meshes.map((x) => { x.mesh.geometry.computeBoundingBox(); return x.mesh.geometry.boundingBox.min.z; })));
+  check(near(lone.restDepth_m().max, 0, 1e-6) && near(lone.restDepth_m().min, allMinZ(n1), 0), 'no extension: rest depth is the window\'s own geometry (front 0, deepest part)');
+  const n2 = await makeNoExt();
+  const nid2 = lone.add(n2, { parent: nid1, side: 'right', w: 24, h: 36, type: TN, colors: {} });
+  check(lone.depthOffset_m(nid2) === 0 && lone.units.every((u) => u.holder.position.z === 0), 'two windows without an extension: both fronts at z = 0');
+
+  // Mixing is refused both ways, and nothing changes.
+  const withExt = await make(V3);
+  check(throws(() => lone.add(withExt, { parent: nid1, side: 'top', w: 24, h: 18, type: T3, colors: {} })) && lone.units.length === 2, 'adding a type with an extension next to ones without is refused');
+  check(throws(() => lone.replaceModel(nid2, withExt, T3)) && lone.get(nid2).model === n2 && lone.get(nid2).type.key === TN.key, 'changing one of them to a type with an extension is refused, window unchanged');
+  withExt.dispose();
+  const n3 = await makeNoExt();
+  const aBefore = { n: a.units.length, z: a.units.map((u) => u.holder.position.z) };
+  check(throws(() => a.add(n3, { parent: id1, side: 'left', w: 24, h: 36, type: TN, colors: {} })), 'adding a type without an extension next to ones with is refused');
+  check(throws(() => a.replaceModel(id2, n3, TN)) && a.get(id2).model === m2, 'changing a window with an extension to one without is refused, window unchanged');
+  check(a.units.length === aBefore.n && a.units.every((u, i) => u.holder.position.z === aBefore.z[i]), 'refused mixes leave the assembly and its depths unchanged');
+  n3.dispose();
+
+  // A single window can switch freely: with one window there is nothing to line up against.
+  lone.remove(nid2);
+  const withExt2 = await make(CS);
+  lone.replaceModel(nid1, withExt2, TC);
+  check(lone.get(nid1).model === withExt2 && lone.depthOffset_m(nid1) === 0, 'single window: no extension → extension is allowed');
+  const n4 = await makeNoExt();
+  lone.replaceModel(nid1, n4, TN);
+  check(lone.get(nid1).model === n4 && lone.units[0].holder.position.z === 0, 'single window: extension → no extension is allowed');
+  lone.dispose();
 }
 
 // Nothing shared between windows of the same type.
