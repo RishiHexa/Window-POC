@@ -3,6 +3,7 @@
 // See ../../../prompts/01-glb-userdata-prompt.md (parts, root) and 02-casement-glb-prompt.md (hinge,
 // rotate animations) for the authoritative description. Everything casement-specific is additive:
 // a root animation without `motion` still means "translate" and is validated exactly as before.
+// 
 
 export const ROOT_SCHEMA = 'davinci.window.cfg/1';
 export const PART_SCHEMA = 'davinci.window.part/1';
