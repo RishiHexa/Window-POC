@@ -47,6 +47,18 @@ export const animationMotion = (a) => a?.motion ?? 'translate';
 export const ANIMATION_DIRECTIONS = ['open', 'close'];
 export const animationDirection = (a) => a?.direction ?? 'open';
 
+/**
+ * Rotation angle (degrees, >= 0) of the open pose in a hinge clip's quaternion keys ([x, y, z, w] per key): the last key
+ * of an opening clip, the first key of a closing clip. Root `openAngle_deg` is this angle's magnitude; its sign is
+ * ignored (Casement_V* store +90, AwningWindow_3_25 stores -57). The swing direction comes from the hinge's `opens`.
+ */
+export function openPoseAngleDeg(values, direction) {
+  const k = direction === 'close' ? 0 : values.length - 4;
+  return (2 * Math.acos(Math.min(1, Math.abs(values[k + 3]))) * 180) / Math.PI;
+}
+/** Allowed difference between |openAngle_deg| and the clip's open pose (stored values differ by < 1e-5°). */
+export const OPEN_ANGLE_TOL_DEG = 0.01;
+
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
 function validateAxis(where, axis, flag) {

@@ -10,7 +10,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as THREE from 'three';
 import { loadGltf, WindowModel } from '../src/configurator/WindowModel.js';
-import { WindowAssembly, jambBack_m, JAMB_EXTENSION_ASSEMBLY } from '../src/configurator/WindowAssembly.js';
+import { WindowAssembly, frameBack_m, FRAME_ASSEMBLY } from '../src/configurator/WindowAssembly.js';
 import { placeAll, placeOn, overlaps, checkAdd, checkResize, checkRemove, removeFrom, extents } from '../src/configurator/assembly.js';
 import { inToM } from '../src/configurator/deform.js';
 
@@ -130,81 +130,71 @@ function boundsMatchLayout(label) {
 boundsMatchLayout('initial');
 check(a.units.length === 4 && new Set(a.models).size === 4, 'four independent models');
 
-// Rest depth (scenery wall placement): frame front at z = 0, deepest extension edge of the double-hung (-8.229 in).
+// Jamb extensions are never rendered (user 2026-11-24). They stay loaded but set no position and no wall depth.
+const extParts = (m) => m.parts.filter((p) => p.cfg.assembly === 'Extension');
+check(a.models.every((m) => extParts(m).length === 4 && extParts(m).every((p) => p.object.visible === false && p.hidden)), 'every jamb extension part is loaded but not visible');
+check(a.models.every((m) => m.parts.filter((p) => !p.hidden).every((p) => p.object.visible === true)), 'every other part stays visible');
 {
-  const d = a.restDepth_m();
-  check(near(d.max, 0, 1e-6), `rest depth max (frame exterior face) ${d.max}`);
-  check(near(d.min / 0.0254, -8.229, 1e-3), `rest depth min (extension edge) ${(d.min / 0.0254).toFixed(4)} in`);
-  m1.setExplode(1);
-  check(near(a.restDepth_m().min, d.min, 0), 'rest depth ignores explode');
-  m1.setExplode(0);
+  const capMeshes = new Set(Object.values(a.capGroups()).flat());
+  check(a.models.every((m) => extParts(m).every((p) => p.meshes.every(({ mesh }) => !capMeshes.has(mesh)))), 'hidden extensions get no section caps');
 }
 
-// Depth alignment: every window's jamb extension back edge (world z) lies on one plane, the deepest one's.
-// Window_V3 extension back -8.229 in, Casement_V4 -7.375 in (GLB data), so casements move 0.854 in to the interior.
-const extBackWorld = (u) => {
+// Depth alignment (user 2026-11-24, "the bottoms of the frames need to meet"): every window's frame interior (back)
+// face lies on one plane, the deepest frame's. Window_V3 frame 3.979 in, Casement_V4 3.250 in, so the double-hungs stay
+// at z = 0 and the casements move 0.729 in to the interior: backs flush, fronts step.
+const frameBox = (u) => {
   u.holder.updateMatrixWorld(true);
   const b = new THREE.Box3();
-  for (const p of u.model.parts) if (p.cfg.assembly === JAMB_EXTENSION_ASSEMBLY) b.expandByObject(p.object);
-  return b.min.z;
+  for (const p of u.model.parts) if (p.cfg.assembly === FRAME_ASSEMBLY) b.expandByObject(p.object);
+  return b;
 };
-function jambsAligned(label) {
-  const zs = a.units.map(extBackWorld);
-  check(zs.every((z) => near(z, zs[0], 1e-9)), `${label}: extension back edges aligned (${zs.map((z) => (z / 0.0254).toFixed(4)).join(', ')} in)`);
-  check(near(zs[0], Math.min(...a.units.map((u) => jambBack_m(u.model))), 1e-12), `${label}: shared plane is the deepest extension`);
-  check(near(a.restDepth_m().min, zs[0], 1e-9), `${label}: rest depth min is the shared jamb plane`);
+const visibleZ = (pick) => pick(...a.units.flatMap((u) => u.model.parts.filter((p) => !p.hidden).map((p) => { u.holder.updateMatrixWorld(true); const b = new THREE.Box3().setFromObject(p.object); return pick === Math.min ? b.min.z : b.max.z; })));
+function framesAligned(label) {
+  const backs = a.units.map((u) => frameBox(u).min.z);
+  check(backs.every((z) => near(z, backs[0], 1e-9)), `${label}: frame backs flush (${backs.map((z) => (z / 0.0254).toFixed(4)).join(', ')} in)`);
+  check(near(backs[0], Math.min(...a.units.map((u) => frameBack_m(u.model))), 1e-12), `${label}: shared plane is the deepest frame back`);
+  check(a.units.every((u) => a.depthOffset_m(u.id) <= 0), `${label}: windows only move toward the interior`);
+  const d = a.restDepth_m();
+  check(near(d.max, visibleZ(Math.max), 1e-9) && near(d.min, visibleZ(Math.min), 1e-9), `${label}: wall spans the visible parts (${(d.min / 0.0254).toFixed(3)} .. ${(d.max / 0.0254).toFixed(3)} in)`);
 }
-jambsAligned('initial');
-check(near(jambBack_m(m1) / 0.0254, -8.229, 1e-3) && near(jambBack_m(m2) / 0.0254, -7.375, 1e-3), 'extension back edges read from GLB data');
-check(a.depthOffset_m(id1) === 0 && a.depthOffset_m(id3) === 0, 'double-hungs (deepest extension) stay at z = 0');
-check(near(a.depthOffset_m(id2) / 0.0254, -0.854, 1e-3) && a.depthOffset_m(id2) === a.depthOffset_m(id4), 'casements move 0.854 in to the interior');
+framesAligned('initial');
+check(near(frameBack_m(m1) / 0.0254, -3.979, 1e-3) && near(frameBack_m(m2) / 0.0254, -3.250, 1e-3), 'frame backs read from GLB data (Window_V3 -3.979 in, Casement_V4 -3.250 in)');
+check(a.depthOffset_m(id1) === 0 && a.depthOffset_m(id3) === 0, 'double-hungs (deepest frame) stay at z = 0');
+check(near(a.depthOffset_m(id2) / 0.0254, -0.729, 1e-3) && a.depthOffset_m(id2) === a.depthOffset_m(id4), 'casements move 0.729 in to the interior');
 {
-  // A casement-only layout keeps its frame front at z = 0, as before.
-  const solo = new WindowAssembly();
-  const mc = await make(CS);
-  const sid = solo.add(mc, { w: 24, h: 36, type: TC, colors: {} });
-  check(solo.depthOffset_m(sid) === 0 && near(solo.restDepth_m().max, 0, 1e-6), 'single casement stays at z = 0');
-  solo.dispose();
-  // The jamb extension is optional. A type without one sits with its frame exterior face at z = 0. It is never lined
-  // up against a type that has one (no documented depth relation), so mixing the two is refused, not guessed.
+  const dh = frameBox(a.get(id1)), cs = frameBox(a.get(id2));
+  check(near((cs.max.z - dh.max.z) / 0.0254, -0.729, 1e-3), `frame fronts step ${((cs.max.z - dh.max.z) / 0.0254).toFixed(3)} in on the exterior side only`);
+  check(near(a.restDepth_m().max, 0, 1e-6), 'wall exterior face at the deepest frame front (z = 0)');
+  check(near(a.restDepth_m().min / 0.0254, -4.194, 1e-3), `wall interior face at the deepest visible part (Window_V3 sash back), not the hidden extension (-8.229 in)`);
+  const d0 = a.restDepth_m().min;
+  m1.setExplode(1);
+  check(near(a.restDepth_m().min, d0, 0), 'rest depth ignores explode');
+  m1.setExplode(0);
+  a.setExplode(1); a.setExplode(0);
+  check(a.models.every((m) => extParts(m).every((p) => p.object.visible === false)), 'explode round trip keeps extensions hidden');
+}
+{
+  // The extension no longer matters for placement: types with and without one can be combined, all flush at z = 0.
   const makeNoExt = async () => {
     const m = await make(CS);
-    for (const p of m.parts) if (p.cfg.assembly === JAMB_EXTENSION_ASSEMBLY) p.cfg = { ...p.cfg, assembly: 'NotExtension' };
+    for (const p of m.parts) if (p.cfg.assembly === 'Extension') p.cfg = { ...p.cfg, assembly: 'NotExtension' };
     return m;
   };
   const TN = { key: 'noext', label: 'Casement without extension' };
-  const n1 = await makeNoExt();
-  check(jambBack_m(n1) === null, 'no extension parts: jambBack_m is null');
+  const mix = new WindowAssembly();
+  const xid1 = mix.add(await make(V3), { w: 24, h: 36, type: T3, colors: {} });
+  const xid2 = mix.add(await makeNoExt(), { parent: xid1, side: 'right', w: 24, h: 36, type: TN, colors: {} });
+  check(mix.units.length === 2 && near(frameBox(mix.get(xid2)).min.z, frameBox(mix.get(xid1)).min.z, 1e-9), 'a type without an extension can sit next to one with an extension, frame backs flush');
+  const swapped = await makeNoExt();
+  mix.replaceModel(xid1, swapped, TN);
+  check(mix.get(xid1).model === swapped && near(frameBox(mix.get(xid1)).min.z, frameBox(mix.get(xid2)).min.z, 1e-9), 'a type change between with and without extension is allowed, backs still flush');
+  mix.dispose();
+  // A type without frame parts cannot be aligned: refused, nothing added.
+  const nf = await make(CS);
+  for (const p of nf.parts) if (p.cfg.assembly === FRAME_ASSEMBLY) p.cfg = { ...p.cfg, assembly: 'NotFrame' };
   const lone = new WindowAssembly();
-  const nid1 = lone.add(n1, { w: 24, h: 36, type: TN, colors: {} });
-  check(lone.units.length === 1 && lone.depthOffset_m(nid1) === 0 && lone.units[0].holder.position.z === 0, 'type without an extension is accepted, frame front at z = 0');
-  const allMinZ = (m) => Math.min(...m.parts.flatMap((p) => p.meshes.map((x) => { x.mesh.geometry.computeBoundingBox(); return x.mesh.geometry.boundingBox.min.z; })));
-  check(near(lone.restDepth_m().max, 0, 1e-6) && near(lone.restDepth_m().min, allMinZ(n1), 0), 'no extension: rest depth is the window\'s own geometry (front 0, deepest part)');
-  const n2 = await makeNoExt();
-  const nid2 = lone.add(n2, { parent: nid1, side: 'right', w: 24, h: 36, type: TN, colors: {} });
-  check(lone.depthOffset_m(nid2) === 0 && lone.units.every((u) => u.holder.position.z === 0), 'two windows without an extension: both fronts at z = 0');
-
-  // Mixing is refused both ways, and nothing changes.
-  const withExt = await make(V3);
-  check(throws(() => lone.add(withExt, { parent: nid1, side: 'top', w: 24, h: 18, type: T3, colors: {} })) && lone.units.length === 2, 'adding a type with an extension next to ones without is refused');
-  check(throws(() => lone.replaceModel(nid2, withExt, T3)) && lone.get(nid2).model === n2 && lone.get(nid2).type.key === TN.key, 'changing one of them to a type with an extension is refused, window unchanged');
-  withExt.dispose();
-  const n3 = await makeNoExt();
-  const aBefore = { n: a.units.length, z: a.units.map((u) => u.holder.position.z) };
-  check(throws(() => a.add(n3, { parent: id1, side: 'left', w: 24, h: 36, type: TN, colors: {} })), 'adding a type without an extension next to ones with is refused');
-  check(throws(() => a.replaceModel(id2, n3, TN)) && a.get(id2).model === m2, 'changing a window with an extension to one without is refused, window unchanged');
-  check(a.units.length === aBefore.n && a.units.every((u, i) => u.holder.position.z === aBefore.z[i]), 'refused mixes leave the assembly and its depths unchanged');
-  n3.dispose();
-
-  // A single window can switch freely: with one window there is nothing to line up against.
-  lone.remove(nid2);
-  const withExt2 = await make(CS);
-  lone.replaceModel(nid1, withExt2, TC);
-  check(lone.get(nid1).model === withExt2 && lone.depthOffset_m(nid1) === 0, 'single window: no extension → extension is allowed');
-  const n4 = await makeNoExt();
-  lone.replaceModel(nid1, n4, TN);
-  check(lone.get(nid1).model === n4 && lone.units[0].holder.position.z === 0, 'single window: extension → no extension is allowed');
-  lone.dispose();
+  check(throws(() => lone.add(nf, { w: 24, h: 36, type: TC, colors: {} })) && lone.units.length === 0, 'type without frame parts is refused, not placed at a guessed depth');
+  nf.dispose();
 }
 
 // Nothing shared between windows of the same type.
@@ -254,14 +244,14 @@ a.replaceModel(id3, mC, TC);
 check(a.get(id3).type.key === TC.key && a.get(id3).model === mC, 'W3 is now a casement');
 check(rectIs(a.rects().get(id3), before.x, before.y, before.w, before.h), 'type change keeps the rectangle');
 boundsMatchLayout('after W3 type change');
-jambsAligned('after W3 type change');
+framesAligned('after W3 type change');
 
 // Explode spreads windows; 0 restores the exact layout positions.
 a.setExplode(1);
 check(a.worldRect(id4).y < inToM(a.rects().get(id4).y), 'exploded: lower window moves down');
 a.setExplode(0);
 check(a.units.every((u) => { const r = a.rects().get(u.id); const p = u.holder.position; return p.x === inToM(r.x) && p.y === inToM(r.y) && p.z === a.depthOffset_m(u.id); }), 'explode 0 restores exact positions');
-jambsAligned('after explode round trip');
+framesAligned('after explode round trip');
 boundsMatchLayout('after explode round trip');
 
 // Remove

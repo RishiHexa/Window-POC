@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "validate": "node tools/validate-glb.mjs public/Window_V3_cfg.glb",
     "validate:casement": "node tools/validate-glb.mjs public/Casement_V4_cfg.glb --original ../glb/Casement_V4.glb",
+    "validate:awning": "node tools/validate-glb.mjs public/AwningWindow_3_25_cfg.glb --no-original",
+    "sweep": "node tools/sweep-collisions.mjs",
     "test:deform": "node tools/test-deform.mjs",
     "test:casement": "node tools/test-casement.mjs",
     "test:awning": "node tools/test-awning.mjs",

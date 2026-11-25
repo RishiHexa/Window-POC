@@ -23,6 +23,8 @@ const IN_STEP = 0.125;
 const BUNDLED_MODELS = [
   { file: 'Window_V3_cfg.glb', label: 'Double-hung (Window_V3)' },
   { file: 'Casement_V4_cfg.glb', label: 'Casement (Casement_V4)' },
+  // Reference size, hinge geometry and opening angle are ASSUMED in this GLB (its root extras say so): preview only.
+  { file: 'AwningWindow_3_25_cfg.glb', label: 'Awning (AwningWindow_3_25, assumed hinge)' },
 ];
 // --------------------------------------------------------------------------------
 
@@ -482,7 +484,7 @@ onMounted(async () => {
           <button @click="closeAll">Close all</button>
         </div>
         <p v-if="selModel?.clips.some((c) => c.motion !== 'translate')" class="muted small">
-          Opening angle {{ selModel.clips.find((c) => c.motion !== 'translate').cfg.openAngle_deg }}° is a preview value, not product data.
+          Opening angle {{ Math.abs(selModel.clips.find((c) => c.motion !== 'translate').cfg.openAngle_deg) }}° is a preview value, not product data.
         </p>
         <div class="row wrap">
           <button :disabled="!playing" @click="togglePause">{{ paused ? 'Resume' : 'Pause' }}</button>
@@ -537,7 +539,7 @@ onMounted(async () => {
               <td :title="`${p.assembly} / ${p.side} / ${p.role}`">{{ p.name }}</td>
               <td>{{ p.canScaleX ? '↔' : '·' }}</td>
               <td>{{ p.canScaleY ? '↕' : '·' }}</td>
-              <td>{{ p.colorZone }}</td>
+              <td :title="p.hidden ? 'Not rendered (jamb extensions are hidden).' : ''">{{ p.colorZone }}{{ p.hidden ? ' · hidden' : '' }}</td>
             </tr>
           </tbody>
         </table>

@@ -1,6 +1,6 @@
 # Window configurator (POC)
 
-Vue 3 + Three.js viewer for `configurator/public/Window_V3_cfg.glb` (double-hung) and `configurator/public/Casement_V4_cfg.glb` (casement). It changes width, height, exterior and interior colour, and plays the sash animations. Everything is driven by the `extras.cfg` userData described in [../prompts/01-glb-userdata-prompt.md](../prompts/01-glb-userdata-prompt.md) and, for the casement hinge, [../prompts/02-casement-glb-prompt.md](../prompts/02-casement-glb-prompt.md).
+Vue 3 + Three.js viewer for `configurator/public/Window_V3_cfg.glb` (double-hung), `configurator/public/Casement_V4_cfg.glb` (casement) and `configurator/public/AwningWindow_3_25_cfg.glb` (awning; its reference size, hinge geometry and opening angle are assumed, see its root extras). It changes width, height, exterior and interior colour, and plays the sash animations. Everything is driven by the `extras.cfg` userData described in [../prompts/01-glb-userdata-prompt.md](../prompts/01-glb-userdata-prompt.md) and, for the casement hinge, [../prompts/02-casement-glb-prompt.md](../prompts/02-casement-glb-prompt.md).
 
 **This is a visual preview only.** Geometry here is never a source of manufacturing dimensions, cut lengths or BOM data.
 
@@ -11,7 +11,9 @@ npm run validate       # validate public/Window_V3_cfg.glb (schema, split planes
 npm run test:deform    # headless WindowModel checks (joints, mitre rigidity, reset, animation travel, colours)
 npm run validate:casement   # validate public/Casement_V4_cfg.glb (additive-only vs ../glb/Casement_V4.glb)
 npm run test:casement  # headless casement checks (hinge pivots, 90° swing, shoe slide, linkage closure, resize while open)
-npm run test:awning    # horizontal hinge axis (awning / hopper) on a synthetic model: swing, head pivot on resize, refusals
+npm run test:awning    # horizontal hinge axis: synthetic model + public/AwningWindow_3_25_cfg.glb (swing, close, 4-bar, resize)
+npm run validate:awning     # validate public/AwningWindow_3_25_cfg.glb (--no-original: it has no un-configured source GLB)
+npm run sweep -- <cfg.glb> [--size W H] [--fail-mm 1]   # collision sweep: moving parts vs frame, depth per pair
 npm run test:assembly  # multi-window layout + WindowAssembly with Window_V3 and Casement_V4 side by side
 npm run test:wall      # scenery wall geometry (areas, reveals, winding, closed solid)
 node tools/test-governor.mjs   # adaptive-quality (60 fps) logic
@@ -52,7 +54,9 @@ The casement GLB adds `davinci.window.hinge/1` pivot/offset node pairs and a roo
   - Every rotation key of a pivot must turn about that pivot's own axis.
   - The root animation's `axis` must equal its pivot's axis.
   - An awning's head pivot uses `pivotFactor.y = 1`, so it follows the head on resize.
-  - No real awning GLB exists yet. The axis-x path is covered by a synthetic model in `tools/test-awning.mjs`.
+  - `tools/test-awning.mjs` covers the axis-x path with a synthetic model and with `AwningWindow_3_25_cfg.glb` (jamb-mounted 4-bar: shoe, support arm, sash bar).
+- **Opening angle.** Root `openAngle_deg` is a magnitude, and its sign is ignored. It must match the clip's open pose within 0.01°, or the GLB is rejected, because the panel shows it.
+- **Close button label.** A close clip whose label equals its open clip's is shown as "<label> (close)".
 - **Hinge nodes.** A pivot node holds P. Its child offset node holds −P, so the meshes below keep absolute reference coordinates. On load, the pair must cancel exactly and P must equal `cfg.pivot_m`. Otherwise the GLB is rejected.
 - **Resize.** Each pivot moves to `P + (ΔW × pivotFactor.x, ΔH × pivotFactor.y, 0)` and its offset moves to the negation. The clip's translation keys (absolute pivot path) get the same shift. They are **not scaled**, because the opening angle and the hinge's shoe slide are fixed hardware values.
 - **Resize while open.** Hinge actions are stopped and then resumed at the same time. That way **Close** returns to the new rest pose instead of the one saved when the clip started.
@@ -69,8 +73,9 @@ The casement GLB adds `davinci.window.hinge/1` pivot/offset node pairs and a roo
 
 - **Wall, room and sky** (the **Wall** button or `&wall=0`; `src/configurator/Scenery.js`, `wall.js`). This is scenery only, not an installation detail:
   - **Wall.** Brick outside and painted plaster inside, with an opening at exactly each window's frame outside rectangle.
-  - **Wall faces.** The exterior face is flush with the frame front. The interior face is at the deepest extension edge, where an extension jamb meets the interior finish. For window types without an extension, it is at the deepest part of the window. Both are read from the GLBs (`WindowAssembly.restDepth_m()`).
-  - **Depth alignment.** Windows are lined up on their extension's interior edge. The extension (`cfg.assembly "Extension"`) is optional. Windows without one keep their frame front at z = 0. A layout never mixes windows with and without an extension: an add or a type change that would mix them is refused, because there is no documented depth relation between them.
+  - **Wall faces.** The exterior face is flush with the most exterior frame front (z = 0). The interior face is at the deepest visible part (frame or sash back). Both are read from the GLBs' visible parts (`WindowAssembly.restDepth_m()`).
+  - **Jamb extensions are not rendered.** Parts with `cfg.assembly "Extension"` are loaded but hidden (`HIDDEN_ASSEMBLIES` in `WindowModel.js`). They have no shadow, AO or section cap, and the parts list marks them "hidden". They don't affect window position or the wall.
+  - **Depth alignment.** Frame backs (the interior face of the `"Frame"` parts, read from each GLB) are flush. The window with the deepest frame stays at z = 0, and the others move toward the interior, so the fronts step where frame depths differ. For example, Casement_V4 and the awning (3.25 in) sit 0.729 in behind Window_V3 (3.979 in). A type without frame parts is refused. Windows with and without an extension can be combined.
   - **Inside and outside.** Inside is a room with a wood floor and a ceiling light. Outside are a lawn and a gradient sky dome. Looking from outside, you see the room through the glass, and from inside you see the sky.
   - **Placeholders.** Sill height (30 in), wall and room size, finishes and the room light are POC placeholders in `SCENERY`.
   - **Hidden** in exploded and section views.

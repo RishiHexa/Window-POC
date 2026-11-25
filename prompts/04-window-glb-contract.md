@@ -23,7 +23,7 @@ Worked examples are `prompts/01-glb-userdata-prompt.md` (double-hung, `Window_V3
 | Fixed (no moving sash) | yes | root `animations: []` |
 | Vertical sliding (single- or double-hung) | yes | `motionGroup` node + root animation `motion: "translate"`, `axis: "y"` |
 | Casement (hinge axis vertical) | yes | hinge pivot/offset nodes with `axis: "y"`, `hingeSide: "left"`/`"right"` + root animation `motion: "rotate"` or `"rotate+slide"` |
-| Awning (hinged at the head) / hopper (hinged at the sill) | yes (since 2026-11-24) | the same hinge nodes with `axis: "x"`, `hingeSide: "top"`/`"bottom"`. See §8. Tested only with a synthetic model so far (`npm run test:awning`) |
+| Awning (hinged at the head) / hopper (hinged at the sill) | yes (since 2026-11-24) | the same hinge nodes with `axis: "x"`, `hingeSide: "top"`/`"bottom"`. See §8. Tested with a synthetic model and `public/AwningWindow_3_25_cfg.glb` (`npm run test:awning`) |
 | Horizontal slider | **no, needs a configurator change first** | travel only scales with height (`travelPerDeltaHeight`). There is no width term, so the travel would be wrong when the width changes |
 | Mullions, couplers, mulled units | **no** | no documented data. The configurator butts separate windows frame to frame |
 
@@ -137,7 +137,7 @@ On **every mesh node**:
 |---|---|---|
 | `role` | `profile`, `gasket`, `glass`, `hardware` | `profile` = PVC extrusion (colourable, surface detail). `gasket` = glazing tape or weatherstrip. `glass` = IGU. `hardware` = rigid metal hardware (keeps its own material, never recoloured) |
 | `colorZone` | `exterior`, `interior`, `glass`, `gasket`, `hardware` | `profile` → `exterior` or `interior` only. `hardware` ⇔ `hardware` (both ways). Use `glass` for glass and `gasket` for gasket |
-| `assembly` | string | used by explode (§9) and by depth alignment (`"Extension"`, optional, §9) |
+| `assembly` | string | used by explode (§9) and by depth alignment (`"Frame"` parts set the alignment face, §9). `"Extension"` parts are hidden |
 | `side` | `left`, `right`, `top`, `bottom`, `infill` | explode direction. `infill` for glass |
 | `x`, `y` | `{split_m, below, above}`, all numbers | split-plane stretch, below |
 | `canScaleX`, `canScaleY` | JSON boolean | must equal `x.below !== x.above` (and the same for y). A contradiction is an error |
@@ -236,6 +236,12 @@ Logic:
 | root animation `axis` | `"y"` | `"x"` | `"x"` |
 | slide (`rotate+slide`) | `slideAxis: "x"` (shoe slides along a head/sill track) | `slideAxis: "y"` if the shoe slides along a jamb track | `slideAxis: "y"` if the shoe slides along a jamb track |
 
+**Awning 4-bar hinge (jamb-mounted shoe + support arm + sash bar)**, as in `AwningWindow_3_25_cfg.glb`:
+- The sash `hingePivot` is the shoe pivot. Its clip translates it along the jamb track (`rotate+slide`, `slideAxis: "y"`).
+- The support arm is a `linkPivot` about its fixed ground pivot on the jamb, with a `linkOffset` below it. The shoe can be its own `linkPivot` that only translates.
+- If `hingePivot.cfg.linkage` gives `arm_ground_pivot_m`, `sashBar_len_m` and `supportArm_len_m`, `npm run test:awning` checks that the linkage stays closed over the swing and at 3 sizes. The closed links must be in line: shoe-to-ground = sash bar + support arm.
+- All hinge pivots on the head side use `pivotFactor.y = 1`, so the whole hinge follows the head on resize.
+
 The rotation sign comes from the right-hand rule about +X (awning, hopper) or +Y (casement). For an outward awning hinged at the head, the bottom rail moves to +Z, so the angle about +X is **negative**. Check it by the free edge's z, not by the sign of the angle (§11).
 
 ### Pivot/offset pairs (`davinci.window.hinge/1`)
@@ -298,7 +304,8 @@ Hard checks (load fails otherwise):
 |---|---|
 | `motion` | `"rotate"` (pure hinge) or `"rotate+slide"` (the pivot also translates, as in a slider-crank / washability hinge) |
 | `node` | the hingePivot name. The clip must have a **rotation** track on it, and for `rotate+slide` also a **translation** track |
-| `openAngle_deg` | non-zero. Shown in the panel as a preview value. If it is not from a drawing, say so in `openAngle_source` |
+| `openAngle_deg` | the **magnitude** of the open pose's rotation, in degrees. Write it positive; the sign is ignored. It must match the clip's open pose (the last key, or the first key of a close clip) within 0.01°, or the GLB is rejected, because the panel shows it. If it is not from a drawing, say so in `openAngle_source` |
+| `label` | button text. Give a close clip its own label (e.g. `"Sash (close)"`). If it repeats the open clip's label, the panel appends " (close)" |
 | `slideAxis`, `slideTravel_m` | required for `rotate+slide` |
 | `direction` | `"open"` (default; rest pose = first key) or `"close"` |
 
@@ -318,11 +325,10 @@ Hard checks (load fails otherwise):
 
 ## 9. Cross-feature requirements (easy to miss)
 
-1. **Jamb extension is optional.** Use `cfg.assembly: "Extension"` on the extension parts if the drawing has one. Never add a fake one.
-   - **With an extension:** windows are depth-aligned on its interior edge (the minimum z of all `"Extension"` parts). The wall's interior face is placed there.
-   - **Without an extension:** the window keeps its frame exterior face at z = 0, and the wall's interior face is placed at the window's deepest geometry.
-   - **The two kinds are never combined in one multi-window group.** Adding a window, or changing a window's type, so that windows with and without an extension would sit side by side is refused with a reason. There is no documented depth relation between them. A single window can be either kind.
-   - The extension parts must use the exact assembly name `"Extension"`. Any other spelling counts as "no extension".
+1. **Depth alignment and jamb extensions** (since 2026-11-24).
+   - Windows line up on their **frame interior (back) face**: the minimum z of the parts with `cfg.assembly: "Frame"`. The deepest frame stays at z = 0, the others move toward the interior. Frame backs are flush and the fronts step where frame depths differ. A GLB without `"Frame"` parts is refused. Each GLB's own frame front must still be at z = 0 within 1e-6 (§2).
+   - **The configurator does not render extension parts** (`cfg.assembly: "Extension"`). Still model them, exactly named `"Extension"`, when the drawing has them. Never add a fake one. They are loaded and listed as hidden, but are never drawn, shadowed or section-capped. They also don't affect position or the wall.
+   - The scenery wall's interior face is at the deepest **visible** part.
 2. **Explode layout is keyed by `assembly`** (and `${assembly}_${role}` for glass/gasket).
    - Known keys: `Extension`, `Frame`, `FrameAccessory`, `LowerSash`, `UpperSash`, `LowerBead`, `UpperBead`, `Sash`, `Bead`, `Hinge`, plus `LowerSash_glass/_gasket`, `UpperSash_glass/_gasket`, `Sash_glass/_gasket`.
    - An unknown assembly is not an error, but the part does not move in the exploded view. Reuse these names where they fit, or add new keys to `explode.js` as a separate configurator change.
@@ -347,9 +353,12 @@ Hard checks (load fails otherwise):
 ```bash
 cd configurator
 node tools/validate-glb.mjs ../glb/<Name>_cfg.glb --original ../glb/<Name>.glb   # must print OK
+#   no un-configured source GLB?  use --no-original instead (the additive-only checks are then skipped; say so)
+node tools/sweep-collisions.mjs ../glb/<Name>_cfg.glb --fail-mm 1   # depth of moving parts in fixed parts over the swing
+node tools/sweep-collisions.mjs ../glb/<Name>_cfg.glb --size <W_in> <H_in>   # repeat at the smallest and largest preview sizes
 npm run test:deform        # double-hung regression (must still pass; unchanged files)
 npm run test:casement      # casement regression (the test's hinge checks are casement-specific)
-npm run test:awning        # horizontal-axis hinge logic (synthetic model)
+npm run test:awning        # horizontal-axis hinge logic (synthetic) + the awning GLB given as argument (default public/AwningWindow_3_25_cfg.glb)
 npm run test:assembly      # multi-window: proves the new GLB places and aligns next to the others
 ```
 
@@ -367,6 +376,6 @@ Report the numbers for each of these:
    - key 0 (or the last key for close clips) = rest;
    - close clip is an exact reverse;
    - for a hinge: the free edge moves to +Z when opening outward (the lock stile for a casement, the bottom rail for an awning) and to −Z when opening inward;
-   - collision sweep of the sash and hardware against the frame/extension over ≥ 11 steps.
+   - collision sweep of the sash and hardware against the frame/extension over ≥ 11 steps. Paste `tools/sweep-collisions.mjs` output. Report overlaps in the closed pose (seal contact from the drawing) separately from overlaps that only appear while opening.
 8. Validator output pasted in full.
 9. A table of every value read or measured: source, block/layer/page, value, cross-check. Every approximation and everything not modelled.

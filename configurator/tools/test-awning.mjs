@@ -1,14 +1,20 @@
 #!/usr/bin/env node
 // Headless checks for horizontal hinge axes (awning / hopper, davinci.window.hinge/1 with axis "x").
-//   node tools/test-awning.mjs
-// No awning GLB exists yet, so this builds a small synthetic awning in code: a 4-member frame and a sash hinged at
-// the head about +X, opening outward by 30°. The sizes and the angle are TEST DATA ONLY, not product values.
-// Checks: it loads; the sash swings outward about the head; the pivot follows the head on resize (pivotFactor.y = 1);
-// resize while open resumes; stop restores the exact rest pose; and every axis mismatch is refused.
+//   node tools/test-awning.mjs [awning_cfg.glb]
+// Part 1 builds a small synthetic awning in code: a 4-member frame and a sash hinged at the head about +X, opening
+// outward by 30°. Its sizes and angle are TEST DATA ONLY, not product values. Checks: it loads; the sash swings
+// outward about the head; the pivot follows the head on resize (pivotFactor.y = 1); resize while open resumes; stop
+// restores the exact rest pose; and every axis / angle mismatch is refused.
+// Part 2 runs on a real awning GLB (the argument, or public/AwningWindow_3_25_cfg.glb if present), using only roles,
+// sides and cfg (no node names): free edge swings the right way, close clip, 4-bar closure if described, resize
+// (also while open), exact rest, and depth alignment next to Window_V3.
 
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as THREE from 'three';
-import { WindowModel, ConfigError } from '../src/configurator/WindowModel.js';
-import { WindowAssembly } from '../src/configurator/WindowAssembly.js';
+import { loadGltf, WindowModel, ConfigError } from '../src/configurator/WindowModel.js';
+import { WindowAssembly, frameBack_m } from '../src/configurator/WindowAssembly.js';
 import { ROOT_SCHEMA, PART_SCHEMA, HINGE_SCHEMA, quaternionAxisError } from '../src/configurator/schema.js';
 
 let failures = 0, passes = 0;
@@ -145,7 +151,7 @@ check(nearVec(worldOf(SASH_BOTTOM), SASH_BOTTOM, 1e-12), 'close after resize: ex
   const a = new WindowAssembly();
   const m = new WindowModel(build());
   const id = a.add(m, { w: W / 0.0254, h: H / 0.0254, type: { key: 'awning-test', label: 'Awning (test)' }, colors: {} });
-  check(a.depthOffset_m(id) === 0, 'assembly: synthetic awning (no extension) placed at z = 0');
+  check(a.depthOffset_m(id) === 0, 'assembly: a single synthetic awning (no extension) is not shifted in depth');
   a.dispose();
 }
 
@@ -159,9 +165,113 @@ refused({ rotAxis: new THREE.Vector3(1, 0.05, 0).normalize() }, /does not rotate
 refused({ anim: { axis: 'y' } }, /root animation axis "y" differs from hinge Sash_Hinge axis "x"/, 'root animation axis differing from the hinge axis is refused');
 check(errorsOf({ hinge: { hingeSide: 'bottom', opens: 'inward' } }).length === 0, 'hopper form (axis x, hingeSide bottom, inward) passes the schema');
 
+refused({ anim: { openAngle_deg: 45 } }, /openAngle_deg 45 does not match the clip's open pose \(30\.0000°/, 'openAngle_deg that differs from the clip is refused');
+check(errorsOf({ anim: { openAngle_deg: -30 } }).length === 0, 'openAngle_deg is a magnitude: -30 matches a 30° clip');
+
 // ---------- quaternionAxisError (pure) ----------
 check(quaternionAxisError([0, 0, 0, 1], 'x') === null && quaternionAxisError([0, 0.5, 0, 0.866], 'y') === null, 'identity and pure-axis keys pass');
 check(quaternionAxisError([0, 0.5, 0, 0.866], 'x') !== null, 'a Y rotation fails an x-axis check');
+
+// ---------- real awning GLB (argument, or public/AwningWindow_3_25_cfg.glb if present) ----------
+const here = dirname(fileURLToPath(import.meta.url));
+const realFile = process.argv[2] || resolve(here, '../public/AwningWindow_3_25_cfg.glb');
+if (!existsSync(realFile)) console.log(`real awning GLB not found (${realFile}): skipped`);
+else {
+  console.log(`real awning GLB: ${realFile}`);
+  const bytes = () => { const b = readFileSync(realFile); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); };
+  let rm;
+  try { rm = new WindowModel(await loadGltf(bytes())); }
+  catch (e) { check(false, `loads: ${e.message} ${(e.errors || []).join(' | ')}`); }
+  if (rm) {
+    const W0 = rm.ref.width_m, H0 = rm.ref.height_m;
+    const hp = rm.hinges.find((h) => h.cfg.role === 'hingePivot');
+    check(hp && hp.cfg.axis === 'x' && ['top', 'bottom'].includes(hp.cfg.hingeSide), `sash hinge is horizontal (axis ${hp?.cfg.axis}, ${hp?.cfg.hingeSide})`);
+    const open = rm.clips.find((c) => c.direction === 'open' && c.cfg.node === hp.name);
+    const close = open?.counterpart ?? null;
+    check(!!open, 'opening clip on the sash hinge');
+    if (close) check(close.label !== open.label && close.mirrored, `close clip "${close.label}" is distinct from "${open.label}" and an exact reverse`);
+
+    rm.scene.updateMatrixWorld(true);
+    const frame = new THREE.Box3();
+    rm.parts.filter((p) => p.cfg.assembly === 'Frame').forEach((p) => frame.expandByObject(p.object));
+    check(near(frame.min.x, 0) && near(frame.max.x, W0) && near(frame.min.y, 0) && near(frame.max.y, H0) && near(frame.max.z, 0), 'frame spans exactly 0..W0 x 0..H0 with its front at z = 0');
+
+    // The free edge is the sash member opposite the hinge.
+    const freeSide = hp.cfg.hingeSide === 'top' ? 'bottom' : 'top';
+    const freePart = rm.parts.find((p) => p.cfg.assembly === hp.cfg.assembly && p.cfg.role === 'profile' && p.cfg.side === freeSide);
+    const freeZ = () => { rm.scene.updateMatrixWorld(true); const b = new THREE.Box3().setFromObject(freePart.object); return (b.min.z + b.max.z) / 2; };
+    const restWorld = () => { rm.scene.updateMatrixWorld(true); return rm.parts.map((p) => p.object.matrixWorld.elements.slice()); };
+    const sameWorld = (a, b) => a.every((e, i) => e.every((x, j) => x === b[i][j]));
+    const outwardOk = (z0, z1) => (hp.cfg.opens === 'outward' ? z1 > z0 + 0.05 : z1 < z0 - 0.05);
+
+    const rest0 = restWorld();
+    const z0 = freeZ();
+    rm.play(open.clip.name);
+    rm.update(open.clip.duration + 1);
+    const zOpen = freeZ();
+    check(outwardOk(z0, zOpen), `free edge (${freePart.name}) z ${(z0 / 0.0254).toFixed(3)} -> ${(zOpen / 0.0254).toFixed(3)} in (opens ${hp.cfg.opens})`);
+    if (close) {
+      rm.play(close.clip.name);
+      rm.update(close.clip.duration + 1);
+      // Clip keys are float32 (glTF), so the last key matches the double-precision pivot_m to ~1e-8 m; WindowModel's own
+      // rest-key check uses 1e-6 for the same reason.
+      const dq = Math.abs(hp.pivot.quaternion.w), dp = hp.pivot.position.distanceTo(hp.P);
+      check(dq > 1 - 1e-9 && dp < 1e-6, `close clip returns the sash to its rest pivot (${(dp * 1e9).toFixed(1)} nm) and angle`);
+    }
+    rm.stop();
+    check(sameWorld(rest0, restWorld()), 'stop: every part back at its exact rest transform');
+
+    // 4-bar closure, when the hinge cfg describes it (shoe pivot = sash pivot, arm about a fixed ground pivot).
+    const lk = hp.cfg.linkage;
+    const arm = lk?.arm_ground_pivot_m && rm.hinges.find((h) => h.cfg.role === 'linkPivot' && h.P.distanceTo(new THREE.Vector3(...lk.arm_ground_pivot_m)) < 1e-9);
+    if (lk?.sashBar_len_m && lk?.supportArm_len_m && arm) {
+      const span = arm.P.distanceTo(hp.P);
+      check(near(span, lk.sashBar_len_m + lk.supportArm_len_m, 1e-9), `closed 4-bar is straight: shoe-to-ground ${span.toFixed(6)} m = sash bar + support arm`);
+      const u = new THREE.Vector3().subVectors(arm.P, hp.P).normalize();
+      let gap = 0;
+      for (const [dW, dH] of [[0, 0], [0.3, 0.2], [-0.1, -0.1]]) {
+        rm.stop();
+        rm.setSize(W0 + dW, H0 + dH);
+        for (let s = 0; s <= 30; s++) {
+          rm.stop(); rm.play(open.clip.name); rm.update(s === 30 ? open.clip.duration + 1 : (open.clip.duration * s) / 30);
+          const B = u.clone().multiplyScalar(lk.sashBar_len_m).applyQuaternion(hp.pivot.quaternion).add(hp.pivot.position);
+          const C = u.clone().multiplyScalar(-lk.supportArm_len_m).applyQuaternion(arm.pivot.quaternion).add(arm.pivot.position);
+          gap = Math.max(gap, B.distanceTo(C));
+        }
+      }
+      check(gap < 1e-6, `4-bar stays closed over 31 poses x 3 sizes (max gap ${(gap * 1000).toFixed(4)} mm)`);
+      rm.stop();
+    } else console.log('  (no 4-bar linkage description in the hinge cfg: closure check skipped)');
+
+    // Resize: pivots follow pivotFactor; the sash still opens the right way at a different size; resize while open.
+    rm.setSize(W0 + 0.3, H0 + 0.2);
+    check(rm.hinges.every((h) => near(h.pivot.position.x, h.P.x + 0.3 * h.cfg.pivotFactor.x, 1e-12) && near(h.pivot.position.y, h.P.y + 0.2 * h.cfg.pivotFactor.y, 1e-12) && h.pivot.position.clone().add(h.offset.position).lengthSq() === 0), 'resize: every pivot follows its pivotFactor, offsets cancel exactly');
+    const zr0 = freeZ();
+    rm.play(open.clip.name);
+    rm.update(open.clip.duration / 2);
+    const tMid = open.action.time;
+    rm.setSize(W0, H0);
+    check(open.action.isScheduled() && open.action.time === tMid, 'resize while open: the swing resumes at the same time');
+    rm.update(open.clip.duration);
+    check(outwardOk(zr0 - 0, freeZ()) || outwardOk(z0, freeZ()), 'resize while open: still swings the right way');
+    rm.stop();
+    check(sameWorld(rest0, restWorld()), 'back at the reference size and closed: exact rest transforms');
+
+    // Next to a double-hung: both have a jamb extension, so they line up on it.
+    const v3Path = resolve(here, '../public/Window_V3_cfg.glb');
+    if (existsSync(v3Path)) {
+      const vb = readFileSync(v3Path);
+      const asm = new WindowAssembly();
+      const id1 = asm.add(new WindowModel(await loadGltf(vb.buffer.slice(vb.byteOffset, vb.byteOffset + vb.byteLength))), { w: 24, h: 36, type: { key: 'v3', label: 'v3' }, colors: {} });
+      const am = new WindowModel(await loadGltf(bytes()));
+      const id2 = asm.add(am, { parent: id1, side: 'right', w: W0 / 0.0254, h: H0 / 0.0254, type: { key: 'awning', label: 'awning' }, colors: {} });
+      const backs = asm.units.map((u) => frameBack_m(u.model) + asm.depthOffset_m(u.id));
+      check(backs.every((b) => near(b, backs[0], 1e-12)) && asm.depthOffset_m(id1) === 0 && asm.depthOffset_m(id2) < 0, `next to Window_V3: frame backs flush (awning offset ${(asm.depthOffset_m(id2) / 0.0254).toFixed(3)} in)`);
+      asm.dispose();
+    }
+    rm.dispose();
+  }
+}
 
 console.log(failures ? `FAILED: ${failures} failed, ${passes} passed` : `OK: ${passes} checks passed`);
 process.exit(failures ? 1 : 0);

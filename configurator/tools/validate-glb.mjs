@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 // Validates a configurator GLB (extras.cfg userData). No dependencies.
 //
-//   node tools/validate-glb.mjs <cfg.glb> [--original <Window_V3.glb>]
+//   node tools/validate-glb.mjs <cfg.glb> [--original <Window_V3.glb> | --no-original]
 //
 // With --original, it also checks the additive-only rules: same nodes, hierarchy and transforms;
 // original extras preserved; animations byte-identical; per-mesh POSITION bbox and triangle count unchanged.
+// Without either flag, the original defaults to ../glb/Window_V3.glb. --no-original skips the additive-only checks
+// (for a GLB built with its cfg in one pass, with no un-configured source file); the report says they were skipped.
 
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ROOT_SCHEMA, PART_SCHEMA, GROUP_SCHEMA, HINGE_SCHEMA, HINGE_PIVOT_ROLES, HINGE_OFFSET_ROLES,
-  validateNodeCfg, animationMotion, animationDirection, quaternionAxisError,
+  validateNodeCfg, animationMotion, animationDirection, quaternionAxisError, openPoseAngleDeg, OPEN_ANGLE_TOL_DEG,
 } from '../src/configurator/schema.js';
 import { collapseDelta } from '../src/configurator/deform.js';
 
@@ -19,8 +21,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 const file = args[0];
 const origIdx = args.indexOf('--original');
+const noOriginal = args.includes('--no-original');
 const originalFile = origIdx >= 0 ? args[origIdx + 1] : resolve(here, '../../glb/Window_V3.glb');
-if (!file) { console.error('usage: validate-glb.mjs <cfg.glb> [--original <orig.glb>]'); process.exit(2); }
+if (!file || file.startsWith('--') || (noOriginal && origIdx >= 0)) { console.error('usage: validate-glb.mjs <cfg.glb> [--original <orig.glb> | --no-original]'); process.exit(2); }
 
 function readGlb(path) {
   const buf = readFileSync(path);
@@ -157,8 +160,13 @@ if (root) {
         if (!h || !drives(h)) errors.push(`clip "${a.clip}": channel on ${nodes[c.target.node]?.name}.${c.target.path} does not drive a hinge pivot of this clip`);
         else if (!['rotation', 'translation'].includes(c.target.path)) errors.push(`clip "${a.clip}": ${c.target.path} channels are not supported on hinges`);
         else if (c.target.path === 'rotation') {
-          const axisErr = quaternionAxisError(readAccessor(glb, anim.samplers[c.sampler].output), h.cfg.axis);
+          const q = readAccessor(glb, anim.samplers[c.sampler].output);
+          const axisErr = quaternionAxisError(q, h.cfg.axis);
           if (axisErr) errors.push(`clip "${a.clip}": ${h.node.name}.rotation ${axisErr}`);
+          if (h.node.name === a.node) {
+            const actual = openPoseAngleDeg(q, animationDirection(a));
+            if (Math.abs(actual - Math.abs(a.openAngle_deg)) > OPEN_ANGLE_TOL_DEG) errors.push(`clip "${a.clip}": openAngle_deg ${a.openAngle_deg} does not match the clip's open pose (${actual.toFixed(4)}°)`);
+          }
         }
         else if (c.target.path === 'translation') {
           const out = readAccessor(glb, anim.samplers[c.sampler].output);
@@ -180,7 +188,8 @@ info.push(splitMats.length ? `Part B present: ${splitMats.map((m) => `${m.name}=
 
 // ---- 3. additive-only comparison with the original
 let orig = null;
-try { orig = readGlb(originalFile); } catch { warnings.push(`original not readable at ${originalFile}; skipped preservation checks`); }
+if (noOriginal) warnings.push('--no-original: additive-only checks against an un-configured source GLB were skipped');
+else try { orig = readGlb(originalFile); } catch { warnings.push(`original not readable at ${originalFile}; skipped preservation checks`); }
 if (orig) {
   const on = orig.json.nodes;
   if (on.length !== nodes.length) errors.push(`node count ${nodes.length} != original ${on.length}`);

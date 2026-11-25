@@ -9,10 +9,19 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import {
   ROOT_SCHEMA, PART_SCHEMA, GROUP_SCHEMA, HINGE_SCHEMA, HINGE_PIVOT_ROLES, HINGE_OFFSET_ROLES,
-  validateNodeCfg, animationMotion, animationDirection, quaternionAxisError,
+  validateNodeCfg, animationMotion, animationDirection, quaternionAxisError, openPoseAngleDeg, OPEN_ANGLE_TOL_DEG,
 } from './schema.js';
 import { deformPositions, collapseDelta, travelFactor, rigidFitDelta } from './deform.js';
 import { explodeDirection, EXPLODE_SCALE } from './explode.js';
+
+/**
+ * Assemblies that are loaded but never drawn (user decision 2026-11-24: do not render jamb extensions). They stay in
+ * `parts` with their reference geometry (the collision sweep and the parts list still see them), but get
+ * `visible = false`: no draw, no shadow, no AO, no section cap (their section helpers are their children). They no
+ * longer set any position: windows align on the frame interior (back) face, and the scenery wall uses visible parts only
+ * (WindowAssembly.restDepth_m).
+ */
+export const HIDDEN_ASSEMBLIES = ['Extension'];
 
 export class ConfigError extends Error {
   constructor(errors) {
@@ -65,7 +74,11 @@ export class WindowModel {
     this.width_m = this.ref.width_m;
     this.height_m = this.ref.height_m;
     this.explode = 0;
-    for (const p of this.parts) p.explodeDir = explodeDirection(p.cfg);
+    for (const p of this.parts) {
+      p.explodeDir = explodeDirection(p.cfg);
+      p.hidden = HIDDEN_ASSEMBLIES.includes(p.cfg.assembly);
+      if (p.hidden) p.object.visible = false;
+    }
   }
 
   // ---------- setup ----------
@@ -224,6 +237,8 @@ export class WindowModel {
       c.counterpart = open;
       open.counterpart = c;
       c.mirrored = open.mirrored = isExactReverse(open.clip, c.clip);
+      // Two buttons with the same text are ambiguous (AwningWindow_3_25 labels both clips "Sash"). Display only.
+      if (c.label === open.label) c.label = `${c.label} (close)`;
     }
   }
 
@@ -265,6 +280,14 @@ export class WindowModel {
     if (!nodeHinge) errs.push(`Clip "${a.clip}": animation node "${a.node}" is not a hinge pivot`);
     else if (a.axis !== nodeHinge.cfg.axis) errs.push(`Clip "${a.clip}": root animation axis "${a.axis}" differs from hinge ${a.node} axis "${nodeHinge.cfg.axis}"`);
     if (!driven.has(`${node}.quaternion`)) errs.push(`Clip "${a.clip}" has no rotation track on ${a.node}`);
+    else {
+      // The panel shows openAngle_deg, so it must be what the clip actually does (magnitude; the sign is ignored).
+      const q = clip.tracks.find((t) => t.name === `${node}.quaternion`);
+      const actual = openPoseAngleDeg(q.values, animationDirection(a));
+      if (Math.abs(actual - Math.abs(a.openAngle_deg)) > OPEN_ANGLE_TOL_DEG) {
+        errs.push(`Clip "${a.clip}": openAngle_deg ${a.openAngle_deg} does not match the clip's open pose (${actual.toFixed(4)}° on ${a.node})`);
+      }
+    }
     if (motion === 'rotate+slide' && !driven.has(`${node}.position`)) errs.push(`Clip "${a.clip}" has no translation track on ${a.node}`);
     this.errors.push(...errs);
     return errs.length ? null : { posTracks };
@@ -416,6 +439,7 @@ export class WindowModel {
   capGroups() {
     const groups = { pvc: [], glass: [], gasket: [], hardware: [] };
     for (const p of this.parts) {
+      if (p.hidden) continue; // a hidden part must not leave a cap where nothing is drawn
       const key = p.cfg.role === 'profile' ? 'pvc' : p.cfg.role;
       for (const { mesh } of p.meshes) groups[key]?.push(mesh);
     }
@@ -474,6 +498,7 @@ export class WindowModel {
       canScaleX: p.cfg.canScaleX,
       canScaleY: p.cfg.canScaleY,
       colorZone: p.cfg.colorZone,
+      hidden: p.hidden,
       primitives: p.meshes.length,
     }));
   }
